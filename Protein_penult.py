@@ -98,33 +98,38 @@ def compute_pcn_df(structure, model_id, chain_id, threshold):
 
 
 # ---------------------------------------------------------
-# PLOTLY 3D VISUALIZER 
+# PLOTLY 3D VISUALIZER
 # ---------------------------------------------------------
 def draw_pcn_plot(labels, coords, adjacency, dist_matrix, residues):
 
-    # No header text — radio buttons only
-    colour_mode = st.radio(
-        "Node Colour Mode",
-        ["Single Colour", "Residue Type"],
-        horizontal=True,
-        label_visibility="collapsed"
-    )
+    # ---------------- DISABLE RESIDUE TYPE FOR DEMO ----------------
+    if st.session_state.get("is_demo", False):
+        colour_mode = "Single Colour"
+    else:
+        colour_mode = st.radio(
+            "Node Colour Mode",
+            ["Single Colour", "Residue Type"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
 
     # Assign node colours
     node_colors = []
     for res in residues:
-        name = res.get_resname().upper()
-        category = res_type_map.get(name, "polar")
-        if category not in residue_type_colors:
-            category = "polar"
+        name = res.get_resname().upper().strip()
+        if name not in res_type_map:
+            name = "UNK"
 
-        node_colors.append(
-            residue_type_colors[category] if colour_mode == "Residue Type" else default_color
-        )
+        category = res_type_map.get(name, "polar")  # hydrophobic/polar/positive/negative
+
+        if colour_mode == "Residue Type":
+            node_colors.append(residue_type_colors[category])
+        else:
+            node_colors.append(default_color)
 
     x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
 
-    # ---------- BETTER EDGE HIGHLIGHT ----------
+    # ---------- BUILD EDGE TRACES ----------
     base_edges = []
     hover_edges = []
     N = len(labels)
@@ -136,45 +141,45 @@ def draw_pcn_plot(labels, coords, adjacency, dist_matrix, residues):
                 x0, y0, z0 = coords[i]
                 x1, y1, z1 = coords[j]
 
-                # Base black edge
                 base_edges.append(
                     go.Scatter3d(
-                        x=[x0, x1], y=[y0, y1], z=[z0, z1],
+                        x=[x0, x1],
+                        y=[y0, y1],
+                        z=[z0, z1],
                         mode="lines",
                         line=dict(color="black", width=2),
                         hoverinfo="none",
-                        showlegend=False
+                        showlegend=False,
                     )
                 )
 
-                # Strong red highlight on hover
                 hover_edges.append(
                     go.Scatter3d(
-                        x=[x0, x1], y=[y0, y1], z=[z0, z1],
+                        x=[x0, x1],
+                        y=[y0, y1],
+                        z=[z0, z1],
                         mode="lines+markers",
                         line=dict(color="red", width=6),
                         marker=dict(size=4, color="red", opacity=0),
                         hoverinfo="text",
                         hovertext=f"{labels[i]} — {labels[j]}<br>Distance: {d:.2f} Å",
                         opacity=0.0,
-                        hoverlabel=dict(
-                            bgcolor="red",
-                            font_size=14,
-                            font_color="white"
-                        )
+                        hoverlabel=dict(bgcolor="red", font_size=14, font_color="white"),
                     )
                 )
 
-    # ---------- Node trace ----------
+    # ---------- NODE TRACE ----------
     node_trace = go.Scatter3d(
-        x=x, y=y, z=z,
+        x=x,
+        y=y,
+        z=z,
         mode="markers",
         marker=dict(size=7, color=node_colors, line=dict(width=2, color="white")),
         text=labels,
-        hovertemplate="Residue: %{text}<extra></extra>"
+        hovertemplate="Residue: %{text}<extra></extra>",
     )
 
-    # ---------- Build figure ----------
+    # ---------- FIGURE ----------
     fig = go.Figure(base_edges + hover_edges + [node_trace])
     fig.update_layout(
         height=700,
@@ -185,7 +190,7 @@ def draw_pcn_plot(labels, coords, adjacency, dist_matrix, residues):
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # Legend (if residue colour mode)
+    # Legend
     if colour_mode == "Residue Type":
         st.markdown("### Residue Type Legend")
         st.markdown("""
@@ -207,6 +212,7 @@ def load_structure_from_upload():
     parser = PDBParser(QUIET=True)
     return parser.get_structure("uploaded", StringIO(pdb_text))
 
+
 def load_demo_structure():
     pdbl = PDBList()
     temp_dir = tempfile.gettempdir()
@@ -216,7 +222,7 @@ def load_demo_structure():
 
 
 # ---------------------------------------------------------
-# MAIN APP LOGIC
+# MAIN WEBSITE LOGIC
 # ---------------------------------------------------------
 def run_pcn_app(structure):
 
@@ -233,22 +239,19 @@ def run_pcn_app(structure):
     adj_df, dist_df, labels, coords, residues = compute_pcn_df(
         structure, model_choice, chain_choice, threshold
     )
-                 # ---------------- NODE, EDGE & DENSITY METRICS ----------------
+
+    # ---------------- METRICS (NODES/EDGES/GRAPH DENSITY) ----------------
     num_nodes = len(labels)
     num_edges = int(np.sum(adj_df.values) // 2)
-
-    # Graph Density = edges / possible edges
     max_edges = num_nodes * (num_nodes - 1) / 2
     density = num_edges / max_edges if max_edges > 0 else 0
 
-    # Display metrics above the plot
     st.markdown(
         f"### **Network Summary**  \n"
         f"- **Nodes:** {num_nodes}  \n"
         f"- **Edges:** {num_edges}  \n"
         f"- **Graph Density:** {density:.4f}"
     )
-
 
     st.subheader("Distance Matrix (Preview)")
     st.dataframe(dist_df.iloc[:10, :10])
@@ -283,12 +286,15 @@ def run_pcn_app(structure):
 # EXECUTION
 # ---------------------------------------------------------
 if uploaded_file:
+    st.session_state["is_demo"] = False
     structure = load_structure_from_upload()
     run_pcn_app(structure)
 
 elif use_demo:
+    st.session_state["is_demo"] = True
     structure = load_demo_structure()
     run_pcn_app(structure)
 
 else:
     st.info("Upload a PDB file or try the demo to begin.")
+
