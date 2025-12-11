@@ -104,9 +104,10 @@ def draw_pcn_plot(labels, coords, adjacency, dist_matrix, residues):
 
     # No header text — radio buttons only
     colour_mode = st.radio(
-        "",
+        "Node Colour Mode",
         ["Single Colour", "Residue Type"],
-        horizontal=True
+        horizontal=True,
+        label_visibility="collapsed"
     )
 
     # Assign node colours
@@ -232,6 +233,22 @@ def run_pcn_app(structure):
     adj_df, dist_df, labels, coords, residues = compute_pcn_df(
         structure, model_choice, chain_choice, threshold
     )
+                 # ---------------- NODE, EDGE & DENSITY METRICS ----------------
+    num_nodes = len(labels)
+    num_edges = int(np.sum(adj_df.values) // 2)
+
+    # Graph Density = edges / possible edges
+    max_edges = num_nodes * (num_nodes - 1) / 2
+    density = num_edges / max_edges if max_edges > 0 else 0
+
+    # Display metrics above the plot
+    st.markdown(
+        f"### **Network Summary**  \n"
+        f"- **Nodes:** {num_nodes}  \n"
+        f"- **Edges:** {num_edges}  \n"
+        f"- **Graph Density:** {density:.4f}"
+    )
+
 
     st.subheader("Distance Matrix (Preview)")
     st.dataframe(dist_df.iloc[:10, :10])
@@ -275,5 +292,3 @@ elif use_demo:
 
 else:
     st.info("Upload a PDB file or try the demo to begin.")
-
-
