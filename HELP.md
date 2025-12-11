@@ -72,31 +72,23 @@ Both matrices are displayed (top-left preview) and can be downloaded.
 
 The interactive Plotly viewer shows:
 
-Residues as nodes
-
-Distance-threshold contacts as edges
-
-Hover labels showing:
-
-Residue name
-
-Residue number
-
-Coordinates
-
-Color modes:
-
-Single color
-
-Residue type categories:
-
-Hydrophobic
-
-Polar
-
-Positive
-
-Negative
+   Residues as nodes
+   Distance-threshold contacts as edges
+   
+   Hover labels showing:
+   
+    - Residue name
+   
+    - Residue number
+   
+    - Color modes:
+       -Single color or Residue Type catagories
+          -Residue type categories:
+             Hydrophobic
+             Polar
+             Positive
+             Negative
+   
 
 Edges turn into thin black lines connecting nodes that are in contact.
 
