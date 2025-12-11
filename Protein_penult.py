@@ -25,7 +25,6 @@ st.markdown("""
 st.title("Protein Contact Network (PCN) Explorer")
 st.caption("Analyze residue contacts · Visualize networks · Export PCN data")
 
-
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
@@ -41,8 +40,6 @@ threshold = st.sidebar.number_input(
     value=5.0,
     step=0.1,
 )
-
-
 # ---------------------------------------------------------
 # RESIDUE TYPE MAP
 # ---------------------------------------------------------
@@ -64,13 +61,13 @@ residue_type_colors = {
     "negative": "#d62728",
 }
 
-default_color = "#636EFA"
-
+default_color = "#8da0cb"  # softer blue for single-colour, works on dark bg
 
 # ---------------------------------------------------------
 # PCN COMPUTATION
 # ---------------------------------------------------------
 def compute_pcn_df(structure, model_id, chain_id, threshold):
+    # defensive: model/chain selection
     model = structure[int(model_id) - 1]
     chain = model[chain_id]
 
@@ -79,30 +76,43 @@ def compute_pcn_df(structure, model_id, chain_id, threshold):
 
     for res in chain.get_residues():
         if "CA" in res:
-            residues.append(res)
-            coords.append(res["CA"].get_coord())
+            try:
+                coords.append(res["CA"].get_coord())
+                residues.append(res)
+            except Exception:
+                continue
+
+    if len(coords) == 0:
+        # return safe empty placeholders
+        return pd.DataFrame(), pd.DataFrame(), [], np.empty((0, 3)), []
 
     coords = np.vstack(coords)
-
     diff = coords[:, None, :] - coords[None, :, :]
     dist_matrix = np.sqrt(np.sum(diff * diff, axis=-1))
     adjacency = (dist_matrix <= threshold).astype(int)
     np.fill_diagonal(adjacency, 0)
 
-    labels = [f"{res.get_resname()}_{res.get_id()[1]}" for res in residues]
+    labels = [f"{res.get_resname().strip()}_{res.get_id()[1]}" for res in residues]
 
     adj_df = pd.DataFrame(adjacency, index=labels, columns=labels)
     dist_df = pd.DataFrame(dist_matrix, index=labels, columns=labels)
 
     return adj_df, dist_df, labels, coords, residues
 
-
 # ---------------------------------------------------------
-# PLOTLY 3D VISUALIZER
+# ENHANCED PLOTLY 3D VISUALIZER (Option 1)
 # ---------------------------------------------------------
-def draw_pcn_plot(labels, coords, adjacency, dist_matrix, residues):
+def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
+    """
+    Enhanced Plotly visualization:
+      - node glow (duplicate larger translucent markers)
+      - node size scaled by degree
+      - edge thickness/transparency scaling
+      - hover shows neighbors + distances summary
+      - residue-type colouring (disabled for demo via session_state)
+    """
 
-    # ---------------- DISABLE RESIDUE TYPE FOR DEMO ----------------
+    # Disable residue type for demo; use radio for uploads
     if st.session_state.get("is_demo", False):
         colour_mode = "Single Colour"
     else:
@@ -112,97 +122,177 @@ def draw_pcn_plot(labels, coords, adjacency, dist_matrix, residues):
             horizontal=True,
             label_visibility="collapsed",
         )
+    if colour_mode == "Residue Type":
+     st.markdown("""
+    ### Residue Type Legend
+    <div style="display:flex; gap:20px; font-size:14px; margin-bottom:10px;">
+        <div><span style="color:#FFA500;">■</span> Hydrophobic</div>
+        <div><span style="color:#1f77b4;">■</span> Polar</div>
+        <div><span style="color:#2ca02c;">■</span> Positive</div>
+        <div><span style="color:#d62728;">■</span> Negative</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Assign node colours
+    # safety
+    if len(labels) == 0 or coords.size == 0:
+        st.warning("No Cα residues found for this selection.")
+        return
+
+    N = len(labels)
+    adj_np = np.array(adjacency)
+
+    # degrees and sizes (NumPy 2.0 safe)
+    degrees = np.sum(adj_np, axis=0)
+
+    min_size, max_size = 6, 18
+
+    if degrees.size > 0:
+     deg_min = degrees.min()
+     deg_ptp = np.ptp(degrees)  # replaces degrees.ptp()
+     deg_ptp = deg_ptp if deg_ptp > 0 else 1  # avoid division by zero
+
+     deg_norm = (degrees - deg_min) / deg_ptp
+     node_sizes = min_size + deg_norm * (max_size - min_size)
+    else:
+       node_sizes = np.array([min_size] * N)
+
+
+    # node colors
     node_colors = []
     for res in residues:
-        name = res.get_resname().upper().strip()
+        name = (res.get_resname() or "").strip().upper()
         if name not in res_type_map:
             name = "UNK"
-
-        category = res_type_map.get(name, "polar")  # hydrophobic/polar/positive/negative
-
-        if colour_mode == "Residue Type":
-            node_colors.append(residue_type_colors[category])
-        else:
-            node_colors.append(default_color)
+        category = res_type_map[name]
+        color = residue_type_colors.get(category, default_color)
+        node_colors.append(color if colour_mode == "Residue Type" else default_color)
 
     x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
 
-    # ---------- BUILD EDGE TRACES ----------
+    # Build neighbor hover text for nodes
+    neighbor_texts = []
+    for i in range(N):
+        neighbors = np.where(adj_np[i] == 1)[0].tolist()
+        if not neighbors:
+            neighbor_texts.append(f"{labels[i]}<br>No contacts within threshold")
+        else:
+            # list up to first 8 neighbors to avoid too-long hover
+            nlist = ", ".join([labels[j] for j in neighbors[:8]])
+            neighbor_texts.append(f"{labels[i]}<br>Connected to: {nlist} ({len(neighbors)} contacts)")
+
+    # Edges: base and hover highlight
     base_edges = []
     hover_edges = []
-    N = len(labels)
-
+    # scale edge width by normalized closeness to threshold: closer distance -> thicker
     for i in range(N):
         for j in range(i + 1, N):
-            if adjacency[i][j] == 1:
-                d = dist_matrix[i][j]
+            if adj_np[i, j] == 1:
+                d = dist_matrix[i, j]
+                # compute thickness: inverse of distance (clamped)
+                # closer distances appear thicker
+                rel = max(0.0, (threshold - d) / (threshold - 0.0)) if threshold > 0 else 1.0
+                width = 1 + 4 * rel  # between 1 and 5
+                opacity = 0.35 + 0.65 * rel  # more opaque if closer
                 x0, y0, z0 = coords[i]
                 x1, y1, z1 = coords[j]
 
                 base_edges.append(
-                    go.Scatter3d(
-                        x=[x0, x1],
-                        y=[y0, y1],
-                        z=[z0, z1],
-                        mode="lines",
-                        line=dict(color="black", width=2),
-                        hoverinfo="none",
-                        showlegend=False,
-                    )
-                )
+    go.Scatter3d(
+        x=[x0, x1],
+        y=[y0, y1],
+        z=[z0, z1],
+        mode="lines",
+        line=dict(color="black", width=width),
+        hoverinfo="none",
+        showlegend=False,
+    )
+)
 
+
+                # hover edge (invisible by default but shows hovertext)
                 hover_edges.append(
                     go.Scatter3d(
                         x=[x0, x1],
                         y=[y0, y1],
                         z=[z0, z1],
-                        mode="lines+markers",
-                        line=dict(color="red", width=6),
-                        marker=dict(size=4, color="red", opacity=0),
+                        mode="lines",
+                        line=dict(color="red", width=width + 6),
                         hoverinfo="text",
                         hovertext=f"{labels[i]} — {labels[j]}<br>Distance: {d:.2f} Å",
                         opacity=0.0,
-                        hoverlabel=dict(bgcolor="red", font_size=14, font_color="white"),
+                        showlegend=False,
                     )
                 )
 
-    # ---------- NODE TRACE ----------
-    node_trace = go.Scatter3d(
-        x=x,
-        y=y,
-        z=z,
+    # Node glow layer: larger translucent markers behind nodes
+    glow = go.Scatter3d(
+        x=x, y=y, z=z,
         mode="markers",
-        marker=dict(size=7, color=node_colors, line=dict(width=2, color="white")),
-        text=labels,
-        hovertemplate="Residue: %{text}<extra></extra>",
-    )
-
-    # ---------- FIGURE ----------
-    fig = go.Figure(base_edges + hover_edges + [node_trace])
-    fig.update_layout(
-        height=700,
-        hovermode="closest",
+        marker=dict(
+            size=[s * 1.9 for s in node_sizes],  # slightly larger than main markers
+            color=node_colors,
+            opacity=0.18,
+            line=dict(width=0),
+        ),
+        hoverinfo="none",
         showlegend=False,
-        margin=dict(l=0, r=0, t=20, b=0),
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    # Node main layer
+    node_trace = go.Scatter3d(
+        x=x, y=y, z=z,
+        mode="markers",
+        marker=dict(size=node_sizes, color=node_colors, line=dict(width=1, color="#111111")),
+        text=neighbor_texts,
+        hovertemplate="%{text}<extra></extra>",
+        name="Residues",
+        showlegend=False,
+    )
 
-    # Legend
-    if colour_mode == "Residue Type":
-        st.markdown("### Residue Type Legend")
-        st.markdown("""
-        <div style="display:flex; gap:20px; font-size:16px;">
-            <div><span style="color:#FFA500;">■</span> Hydrophobic</div>
-            <div><span style="color:#1f77b4;">■</span> Polar</div>
-            <div><span style="color:#2ca02c;">■</span> Positive</div>
-            <div><span style="color:#d62728;">■</span> Negative</div>
-        </div>
-        """, unsafe_allow_html=True)
+    # Build figure
+    fig = go.Figure(data=base_edges + hover_edges + [glow, node_trace])
+
+    fig.update_layout(
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+
+        scene=dict(
+            xaxis=dict(
+                showbackground=False,
+                showgrid=False,
+                zeroline=False,
+                showticklabels=False,
+            ),
+            yaxis=dict(
+                showbackground=False,
+                showgrid=False,
+                zeroline=False,
+                showticklabels=False,
+            ),
+            zaxis=dict(
+                showbackground=False,
+                showgrid=False,
+                zeroline=False,
+                showticklabels=False,
+            ),
+            aspectmode="data",
+        ),
+
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=750,
+)
 
 
+
+ # Display metrics above plot in header (kept elsewhere in main flow)
+    st.plotly_chart(
+    fig,
+    config={
+        "displayModeBar": True,
+        "scrollZoom": True
+    },
+    use_container_width=True
+)
 # ---------------------------------------------------------
 # LOAD STRUCTURES
 # ---------------------------------------------------------
@@ -222,7 +312,7 @@ def load_demo_structure():
 
 
 # ---------------------------------------------------------
-# MAIN WEBSITE LOGIC
+# MAIN APP LOGIC
 # ---------------------------------------------------------
 def run_pcn_app(structure):
 
@@ -240,10 +330,10 @@ def run_pcn_app(structure):
         structure, model_choice, chain_choice, threshold
     )
 
-    # ---------------- METRICS (NODES/EDGES/GRAPH DENSITY) ----------------
+    # ---------------- METRICS ----------------
     num_nodes = len(labels)
-    num_edges = int(np.sum(adj_df.values) // 2)
-    max_edges = num_nodes * (num_nodes - 1) / 2
+    num_edges = int(np.sum(adj_df.values) // 2) if num_nodes > 0 else 0
+    max_edges = num_nodes * (num_nodes - 1) / 2 if num_nodes > 1 else 1
     density = num_edges / max_edges if max_edges > 0 else 0
 
     st.markdown(
@@ -254,19 +344,27 @@ def run_pcn_app(structure):
     )
 
     st.subheader("Distance Matrix (Preview)")
-    st.dataframe(dist_df.iloc[:10, :10])
+    if not dist_df.empty:
+        st.dataframe(dist_df.iloc[:10, :10])
+    else:
+        st.write("No distance data to show.")
 
     st.subheader("Adjacency Matrix (Preview)")
-    st.dataframe(adj_df.iloc[:10, :10])
+    if not adj_df.empty:
+        st.dataframe(adj_df.iloc[:10, :10])
+    else:
+        st.write("No adjacency data to show.")
 
     # Downloads
-    st.download_button("Download Distance Matrix (CSV)", dist_df.to_csv().encode(), "distance.csv")
-    st.download_button("Download Adjacency Matrix (CSV)", adj_df.to_csv().encode(), "adjacency.csv")
+    if not dist_df.empty:
+        st.download_button("Download Distance Matrix (CSV)", dist_df.to_csv().encode(), "distance.csv")
+    if not adj_df.empty:
+        st.download_button("Download Adjacency Matrix (CSV)", adj_df.to_csv().encode(), "adjacency.csv")
 
     # SIF + TXT
     edges = []
     N = len(labels)
-    adjacency_np = adj_df.values
+    adjacency_np = adj_df.values if not adj_df.empty else np.zeros((0, 0))
 
     for i in range(N):
         for j in range(i + 1, N):
@@ -275,11 +373,12 @@ def run_pcn_app(structure):
 
     sif_text = "\n".join(edges)
 
-    st.download_button("Download SIF (Cytoscape)", sif_text, "network.sif")
-    st.download_button("Download Edge List (TXT)", sif_text, "edges.txt")
+    if edges:
+        st.download_button("Download SIF (Cytoscape)", sif_text, "network.sif")
+        st.download_button("Download Edge List (TXT)", sif_text, "edges.txt")
 
     # Plot
-    draw_pcn_plot(labels, coords, adjacency_np, dist_df.values, residues)
+    draw_pcn_plot_enhanced(labels, coords, adjacency_np, dist_df.values if not dist_df.empty else np.zeros((N, N)), residues)
 
 
 # ---------------------------------------------------------
