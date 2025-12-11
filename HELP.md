@@ -93,50 +93,40 @@ The interactive Plotly viewer shows:
 Edges turn into thin black lines connecting nodes that are in contact.
 
 ## 7. Downloadable forms
-✔ Distance Matrix (CSV)
+ - Distance Matrix (CSV)
 
-✔ Adjacency Matrix (CSV)
+ - Adjacency Matrix (CSV)
 
-✔ SIF File (for Cytoscape)
+ - SIF File (for Cytoscape)
+   - Format:
+      -RESIDUE1 pp RESIDUE2
 
-Format:
-
-RESIDUE1 pp RESIDUE2
-
-✔ TXT Edge List
+- TXT Edge List
 
 A simple list of contacting residue pairs.
 
 These formats allow downstream network analysis using external tools.
 
 ## 8. Common Errors & Solutions
-“No CA atoms found”
-
-Your PDB file may contain:
-
-Missing residues
-
-Non-standard chains
-
-Non-protein entries
-
-Ensure CA atoms exist.
-
-“Model index out of range”
-
-You may have selected a model number not present in the structure.
-
-Blank visualization
-
-Occurs if:
-
-No residues were parsed
-
-Threshold is too low
-
-The structure contains only heteroatoms
-
-Increase the threshold or check your chain selection.
+1. “No CA atoms found”
+```bash
+     -Missing residues
+     -Non-standard or mislabeled chains
+     -File contains heteroatoms instead of amino acids
+     -Solution: Ensure the selected chain contains amino acids with valid Cα atoms.
+```
+2. “Model index out of range”
+```bash
+      -Selected an NMR model number not present in the PDB
+      -Solution: Choose a model within the available range.
+```
+3. Blank Visualization
+```bash 
+          -No residues parsed
+          -Threshold too low
+          -Chain contains only heteroatoms or missing Cα atoms
+          -Solution: Increase threshold or verify chain selection and PDB integrity.
+```
 
 ## 9. Citation / Academic Use
 
