@@ -35,8 +35,8 @@ use_demo = st.sidebar.button("Try Demo (1CRN)")
 
 threshold = st.sidebar.number_input(
     "Contact threshold (Å)",
-    min_value=2.0,
-    max_value=15.0,
+    min_value=1.0,
+    max_value=40.0,
     value=5.0,
     step=0.1,
 )
