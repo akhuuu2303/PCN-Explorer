@@ -363,3 +363,21 @@ def run_pcn_app(structure):
 
     else:
         st.write("No contact data available.")
+
+
+   
+
+
+# ---------------------------------------------------------
+# EXECUTION
+# ---------------------------------------------------------
+if uploaded_file:
+    st.session_state["is_demo"] = False
+    run_pcn_app(load_structure_from_upload())
+
+elif use_demo:
+    st.session_state["is_demo"] = True
+    run_pcn_app(load_demo_structure())
+
+else:
+    st.info("Upload a PDB file or try the demo to begin.")
