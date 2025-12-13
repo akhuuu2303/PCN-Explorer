@@ -1,4 +1,5 @@
 import streamlit as st
+import os
 from Bio.PDB import PDBParser, PDBList
 import numpy as np
 import pandas as pd
@@ -6,12 +7,8 @@ import plotly.graph_objects as go
 from io import StringIO
 import tempfile
 
-# ---------------------------------------------------------
-# PAGE SETUP
-# ---------------------------------------------------------
 st.set_page_config(page_title="PCN Explorer", layout="wide")
 
-# Help link
 st.markdown("""
 <div style='text-align: right; font-size: 18px; margin-top: -40px;'>
     <a href="https://github.com/akhuuu2303/PCN-Explorer/blob/main/HELP.md"
@@ -25,13 +22,12 @@ st.markdown("""
 st.title("Protein Contact Network (PCN) Explorer")
 st.caption("Analyze residue contacts · Visualize networks · Export PCN data")
 
-# ---------------------------------------------------------
-# SIDEBAR
-# ---------------------------------------------------------
 st.sidebar.header("Upload & Settings")
 
 uploaded_file = st.sidebar.file_uploader("Upload a PDB file", type=["pdb"])
-use_demo = st.sidebar.button("Try Demo (1CRN)")
+
+demo_choices = ["None", "1CRN", "1UBQ", "4HHB"]
+demo_selection = st.sidebar.selectbox("Demo protein", demo_choices, index=0, key="demo_selection")
 
 threshold = st.sidebar.number_input(
     "Contact threshold (Å)",
@@ -41,9 +37,6 @@ threshold = st.sidebar.number_input(
     step=0.1,
 )
 
-# ---------------------------------------------------------
-# RESIDUE TYPE MAP
-# ---------------------------------------------------------
 res_type_map = {
     "ALA": "hydrophobic", "VAL": "hydrophobic", "ILE": "hydrophobic",
     "LEU": "hydrophobic", "MET": "hydrophobic", "PHE": "hydrophobic",
@@ -64,9 +57,6 @@ residue_type_colors = {
 
 default_color = "#8da0cb"
 
-# ---------------------------------------------------------
-# PCN COMPUTATION
-# ---------------------------------------------------------
 def compute_pcn_df(structure, model_id, chain_id, threshold):
     model = structure[int(model_id) - 1]
     chain = model[chain_id]
@@ -98,9 +88,6 @@ def compute_pcn_df(structure, model_id, chain_id, threshold):
         residues
     )
 
-# ---------------------------------------------------------
-# ENHANCED PLOT FUNCTION
-# ---------------------------------------------------------
 def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
     """
     Enhanced dual-plot PCN visualizer:
@@ -110,7 +97,6 @@ def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
       • No unwanted dropdowns between sections
     """
 
-    # SAFETY CHECK
     if len(labels) == 0 or coords.size == 0:
         st.warning("No residues available for visualization.")
         return
@@ -118,9 +104,6 @@ def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
     N = len(labels)
     adj_np = np.array(adjacency)
 
-    # ---------------------------------------------------------
-    # DEGREE CALCULATION (NumPy 2.0 Safe)
-    # ---------------------------------------------------------
     degrees = np.sum(adj_np, axis=0)
     deg_min = degrees.min() if len(degrees) else 0
     deg_ptp = np.ptp(degrees) if np.ptp(degrees) > 0 else 1
@@ -128,9 +111,6 @@ def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
     min_size, max_size = 6, 18
     node_sizes = min_size + ((degrees - deg_min) / deg_ptp) * (max_size - min_size)
 
-    # ---------------------------------------------------------
-    # GLOBAL RESIDUE-TYPE LEGEND
-    # ---------------------------------------------------------
     st.markdown(
         """
         ### Residue Type Legend
@@ -144,14 +124,8 @@ def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
         unsafe_allow_html=True,
     )
 
-    # ---------------------------------------------------------
-    # CREATE TWO SIDE-BY-SIDE PLOTS
-    # ---------------------------------------------------------
     col1, col2 = st.columns(2)
 
-    # =========================================================
-    # LEFT PLOT — CONTACT HIGHLIGHT VIEW
-    # =========================================================
     with col1:
         st.subheader("Contact Highlight View")
         max_degree = int(degrees.max()) if N > 0 else 0
@@ -162,7 +136,6 @@ def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
                 key="degree_filter_left"
             )
 
-        # COLOR LOGIC FOR LEFT PLOT
         node_colors_left = []
         for i, res in enumerate(residues):
             name = res.get_resname().strip().upper()
@@ -186,9 +159,6 @@ def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
               use_container_width=True,
               key="contact_plot")
 
-    # =========================================================
-    # RIGHT PLOT — RESIDUE VIEWER
-    # =========================================================
     with col2:
         st.subheader("Residue Viewer")
 
@@ -200,7 +170,6 @@ def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
             key="residue_filter_right"
         )
 
-        # COLOR LOGIC FOR RIGHT PLOT
         node_colors_right = []
         for i, res in enumerate(residues):
             name = res.get_resname().strip().upper()
@@ -221,15 +190,11 @@ def draw_pcn_plot_enhanced(labels, coords, adjacency, dist_matrix, residues):
                          key="residue_plot")
 
 
-# ---------------------------------------------------------
-# SUPPORT FUNCTION: CLEAN 3D builder (shared by both plots)
-# ---------------------------------------------------------
 def build_3d_figure(labels, coords, adj_np, dist_matrix, node_colors, node_sizes):
 
     N = len(labels)
     x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
 
-    # Build edges
     base_edges = []
     hover_edges = []
 
@@ -246,7 +211,6 @@ def build_3d_figure(labels, coords, adj_np, dist_matrix, node_colors, node_sizes
             x0, y0, z0 = coords[i]
             x1, y1, z1 = coords[j]
 
-            # base edge
             base_edges.append(
                 go.Scatter3d(
                     x=[x0, x1], y=[y0, y1], z=[z0, z1],
@@ -257,7 +221,6 @@ def build_3d_figure(labels, coords, adj_np, dist_matrix, node_colors, node_sizes
                 )
             )
 
-            # hover edge
             hover_edges.append(
                 go.Scatter3d(
                     x=[x0, x1], y=[y0, y1], z=[z0, z1],
@@ -270,7 +233,6 @@ def build_3d_figure(labels, coords, adj_np, dist_matrix, node_colors, node_sizes
                 )
             )
 
-    # Node glow layer
     glow = go.Scatter3d(
         x=x, y=y, z=z,
         mode="markers",
@@ -283,7 +245,6 @@ def build_3d_figure(labels, coords, adj_np, dist_matrix, node_colors, node_sizes
         showlegend=False,
     )
 
-    # Node main layer
     node_trace = go.Scatter3d(
         x=x, y=y, z=z,
         mode="markers",
@@ -313,22 +274,20 @@ def build_3d_figure(labels, coords, adj_np, dist_matrix, node_colors, node_sizes
 
 
 
-# ---------------------------------------------------------
-# LOAD STRUCTURES
-# ---------------------------------------------------------
 def load_structure_from_upload():
     text = uploaded_file.read().decode("utf-8")
     return PDBParser(QUIET=True).get_structure("uploaded", StringIO(text))
 
-def load_demo_structure():
+def load_demo_structure(pdb_id):
+    local_demo_path = os.path.join(os.path.dirname(__file__), "demo_data", f"{pdb_id}.pdb")
+    if os.path.exists(local_demo_path):
+        return PDBParser(QUIET=True).get_structure(pdb_id.lower(), local_demo_path)
+
     pdbl = PDBList()
     temp = tempfile.gettempdir()
-    path = pdbl.retrieve_pdb_file("1CRN", file_format="pdb", pdir=temp)
-    return PDBParser(QUIET=True).get_structure("demo", path)
+    path = pdbl.retrieve_pdb_file(pdb_id, file_format="pdb", pdir=temp)
+    return PDBParser(QUIET=True).get_structure(pdb_id.lower(), path)
 
-# ---------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------
 def run_pcn_app(structure):
 
     st.success("PDB Loaded Successfully")
@@ -355,18 +314,15 @@ def run_pcn_app(structure):
         f"- **Graph Density:** {density:.4f}"
     )
 
-    # Matrices
     st.subheader("Distance Matrix (Preview)")
     st.dataframe(dist_df.iloc[:10, :10])
 
     st.subheader("Adjacency Matrix (Preview)")
     st.dataframe(adj_df.iloc[:10, :10])
 
-    # Downloads
     st.download_button("Download Distance Matrix (CSV)", dist_df.to_csv().encode(), "distance.csv")
     st.download_button("Download Adjacency Matrix (CSV)", adj_df.to_csv().encode(), "adjacency.csv")
 
-    # SIF Export
     edges = []
     for i in range(num_nodes):
         for j in range(i + 1, num_nodes):
@@ -375,7 +331,6 @@ def run_pcn_app(structure):
 
     sif_text = "\n".join(edges)
     st.download_button("Download SIF (Cytoscape)", sif_text, "network.sif")
-    # Plot
     draw_pcn_plot_enhanced(
         labels,
         coords,
@@ -384,34 +339,43 @@ def run_pcn_app(structure):
         residues
     )
 
-    # ---- CONTACT COUNT SUMMARY ----
-    st.subheader("Residue Contact Summary")
+    st.subheader("Residue Degree Distribution")
 
     if len(labels) > 0:
         degrees = np.sum(adj_df.values, axis=0)
+        degree_counts = pd.Series(degrees).value_counts().sort_index()
 
-        degree_summary = (
-        pd.Series(degrees)
-        .value_counts()
-        .sort_index()
-        .reset_index()
+        fig = go.Figure(
+            go.Bar(
+                x=degree_counts.index, 
+                y=degree_counts.values, 
+                marker_color="#205493",
+                hovertemplate="Degree: %{x}<br>Residues: %{y}<extra></extra>",
+            )
         )
-        degree_summary.columns = ["Number of Contacts", "Number of Residues"]
+        fig.update_layout(
+            xaxis_title="Degree (number of contacts)",
+            yaxis_title="Residue count",
+            margin=dict(l=0, r=0, t=10, b=0),
+            height=360,
+        )
 
-        st.dataframe(degree_summary, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Histogram showing the distribution of residue contact degrees in the protein contact network. Degree corresponds to the number of residues within the specified distance threshold.")
 
     else:
         st.write("No contact data available.")
-# ---------------------------------------------------------
-# EXECUTION
-# ---------------------------------------------------------
 if uploaded_file:
     st.session_state["is_demo"] = False
     run_pcn_app(load_structure_from_upload())
 
-elif use_demo:
-    st.session_state["is_demo"] = True
-    run_pcn_app(load_demo_structure())
-
 else:
-    st.info("Upload a PDB file or try the demo to begin.")
+    st.session_state["is_demo"] = (demo_selection != "None")
+
+    demo_active = st.session_state.get("is_demo", False)
+    demo_id = st.session_state.get("demo_selection", demo_selection)
+
+    if demo_active and demo_id and demo_id != "None":
+        run_pcn_app(load_demo_structure(demo_id))
+    else:
+        st.info("Upload a PDB file or try the demo to begin.")
