@@ -19,15 +19,15 @@ This tool constructs PCNs using Cα–Cα geometric distances and provides both 
 - Computes:
   - Full Cα–Cα distance matrix
   - Binary adjacency matrix (threshold-based contacts)
-- Interactive 3D visualization of the residue network
+- Interactive 3D visualization of the residue network with a choice of highlighting residues with the certain number of contacts ( Degree )
 - Downloadable outputs:
   - Distance matrix (CSV)
   - Adjacency matrix (CSV)
   - SIF file (Cytoscape-compatible)
   - TXT edge list
 - Optional residue-type coloring (hydrophobic, polar, positive, negative)
-
----
+- A Residue Degree Distribution graph 
+  
 
 ## Method
 
