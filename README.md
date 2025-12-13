@@ -19,7 +19,7 @@ This tool constructs PCNs using Cα–Cα geometric distances and provides both 
 - Computes:
   - Full Cα–Cα distance matrix
   - Binary adjacency matrix (threshold-based contacts)
-- Interactive 3D visualization of the residue network with a choice of highlighting residues with the certain number of contacts ( Degree )
+- Interactive 3D visualization of the residue network with a choice of highlighting specific residues and nodes given number of contacts or degree
 - Downloadable outputs:
   - Distance matrix (CSV)
   - Adjacency matrix (CSV)
