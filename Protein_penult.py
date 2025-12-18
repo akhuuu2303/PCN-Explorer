@@ -837,7 +837,7 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
             model_choice = st.selectbox("Select NMR Model", model_ids)
         else:
            st.info("Single structural model detected (no NMR ensemble). Using Model 1.")
-            model_choice = 1
+           model_choice = 1
     
     chains = list(structure[model_choice - 1].get_chains())
     chain_ids = [c.id for c in chains]
