@@ -3,3 +3,4 @@ biopython
 numpy
 pandas
 plotly
+scipy
