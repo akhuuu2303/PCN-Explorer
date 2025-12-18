@@ -9,14 +9,13 @@ import tempfile
 from scipy.spatial.distance import cdist
 from collections import defaultdict
 import base64
+from PIL import Image  # Ensure this import is at the top
+im = Image.open("icon.png") 
 
-# -----------------------------------------------------------------------------
-# CONFIGURATION
-# -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Protein Contact Network Explorer", 
     layout="wide",
-    page_icon="🧬"
+    page_icon=im  # Pass the image object here
 )
 
 # -----------------------------------------------------------------------------
@@ -833,7 +832,7 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
             st.info(f"Multi-model structure detected ({len(model_ids)} models).")
             model_choice = st.selectbox("Select NMR Model", model_ids)
         else:
-            st.info("Single structural modeSingle structural model detected (no NMR ensemble). Using Model 1.l detected (e.g. X-ray). Using Model 1.")
+           st.info("Single structural model detected (no NMR ensemble). Using Model 1.")
             model_choice = 1
     
     chains = list(structure[model_choice - 1].get_chains())
