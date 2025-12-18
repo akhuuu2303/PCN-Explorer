@@ -9,14 +9,18 @@ import tempfile
 from scipy.spatial.distance import cdist
 from collections import defaultdict
 import base64
-from PIL import Image  # Ensure this import is at the top
-im = Image.open("icon.png") 
+from PIL import Image
 
-st.set_page_config(
-    page_title="Protein Contact Network Explorer", 
-    layout="wide",
-    page_icon=im  # Pass the image object here
-)
+# Get the absolute path of the directory where this script is located
+current_dir = os.path.dirname(os.path.abspath(__file__))
+icon_path = os.path.join(current_dir, "icon.png")
+
+# Load the image only if it exists, otherwise fallback to emoji
+if os.path.exists(icon_path):
+    im = Image.open(icon_path)
+    st.set_page_config(page_title="Protein Contact Network Explorer", layout="wide", page_icon=im)
+else:
+    st.set_page_config(page_title="Protein Contact Network Explorer", layout="wide", page_icon="🧬")
 
 # -----------------------------------------------------------------------------
 # CUSTOM CSS (Optimized for Readability & Professional UI)
