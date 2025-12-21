@@ -9,22 +9,17 @@ import tempfile
 from scipy.spatial.distance import cdist
 from collections import defaultdict
 import base64
-from PIL import Image
+from PIL import Image  
+import networkx as nx
+im = Image.open("icon.png") 
 
-# Get the absolute path of the directory where this script is located
-current_dir = os.path.dirname(os.path.abspath(__file__))
-icon_path = os.path.join(current_dir, "icon.png")
+st.set_page_config(
+    page_title="Protein Contact Network Explorer", 
+    layout="wide",
+    page_icon=im  
+)
 
-# Load the image only if it exists, otherwise fallback to emoji
-if os.path.exists(icon_path):
-    im = Image.open(icon_path)
-    st.set_page_config(page_title="Protein Contact Network Explorer", layout="wide", page_icon=im)
-else:
-    st.set_page_config(page_title="Protein Contact Network Explorer", layout="wide", page_icon="🧬")
 
-# -----------------------------------------------------------------------------
-# CUSTOM CSS (Optimized for Readability & Professional UI)
-# -----------------------------------------------------------------------------
 st.markdown("""
 <style>
     /* Global App Background */
@@ -152,33 +147,33 @@ default_color = "#8da0cb"
 
 
 def compute_enhanced_metrics(adj_np, dist_matrix):
+    """
+    UPDATED: Uses NetworkX for verified calculations of Centrality measures.
+    Ensures Closeness Centrality is normalized (0 to 1) using wf_improved=True.
+    """
     N = len(adj_np)
+    
+    # Create NetworkX graph for accurate topological metrics
+    G = nx.from_numpy_array(adj_np)
+    
+    # 1. Degree
     degrees = np.sum(adj_np, axis=0)
     
-    betweenness = np.zeros(N)
-    # Simplified calculation for performance
-    for i in range(N):
-        for j in range(N):
-            if i != j and adj_np[i, j] == 1:
-                betweenness[i] += 1
-    betweenness = betweenness / max(betweenness.max(), 1)
+    # 2. Betweenness Centrality
+    # NetworkX normalizes this by default
+    betweenness_dict = nx.betweenness_centrality(G, normalized=True)
+    betweenness = np.array([betweenness_dict[i] for i in range(N)])
     
-    closeness = np.zeros(N)
-    for i in range(N):
-        distances = dist_matrix[i]
-        valid_distances = distances[distances > 0]
-        if len(valid_distances) > 0:
-            closeness[i] = len(valid_distances) / np.sum(valid_distances)
+    # 3. Closeness Centrality (UPDATED)
+    # wf_improved=True uses the Wasserman and Faust formula.
+    # This allows for correct normalization (0 to 1) even if the graph 
+    # has multiple disconnected components.
+    closeness_dict = nx.closeness_centrality(G, wf_improved=True)
+    closeness = np.array([closeness_dict[i] for i in range(N)])
     
-    clustering = np.zeros(N)
-    for i in range(N):
-        neighbors = np.where(adj_np[i] == 1)[0]
-        k = len(neighbors)
-        if k >= 2:
-            subgraph = adj_np[np.ix_(neighbors, neighbors)]
-            actual_edges = np.sum(subgraph) / 2
-            possible_edges = k * (k - 1) / 2
-            clustering[i] = actual_edges / possible_edges
+    # 4. Clustering Coefficient
+    clustering_dict = nx.clustering(G)
+    clustering = np.array([clustering_dict[i] for i in range(N)])
     
     return {
         'degree': degrees,
@@ -207,66 +202,65 @@ def identify_hub_communities(adj_np, hub_indices, residues):
 
 
 def compute_pcn_df(structure, model_id, chain_id, threshold, progress=None, progress_label=None):
-    model = structure[int(model_id) - 1]
+    model = structure[model_id - 1]
     chain = model[chain_id]
+    
+    # --- STRICT FILTER: Only Standard 20 Amino Acids ---
+    standard_aa = {
+        'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 
+        'GLN', 'GLU', 'GLY', 'HIS', 'ILE', 
+        'LEU', 'LYS', 'MET', 'PHE', 'PRO', 
+        'SER', 'THR', 'TRP', 'TYR', 'VAL'
+    }
 
     residues = []
-    coords = []
-
-    for i, res in enumerate(chain.get_residues()):
-        if "CA" in res:
-            residues.append(res)
-            coords.append(res["CA"].get_coord())
-        if progress is not None and i % 5 == 0:
-            val = min(20 + (len(residues) % 100), 50)
-            progress.progress(val)
-            if progress_label is not None:
-                progress_label.text(f"{val}% complete — scanning residues")
-
-    if len(coords) == 0:
-        return pd.DataFrame(), pd.DataFrame(), [], np.empty((0, 3)), [], {}
-
-    coords = np.vstack(coords)
-    if progress is not None:
-        progress.progress(60)
-        if progress_label is not None:
-            progress_label.text("60% complete — building coordinate matrix")
-    
-    diff = coords[:, None, :] - coords[None, :, :]
-    dist_matrix = np.sqrt(np.sum(diff * diff, axis=-1))
-    adjacency = (dist_matrix <= threshold).astype(int)
-    
-    if progress is not None:
-        progress.progress(90)
-        if progress_label is not None:
-            progress_label.text("90% complete — computing adjacency")
-    
-    np.fill_diagonal(adjacency, 0)
-    
-    labels = [f"{res.get_resname().strip()}-{res.get_id()[1]}" for res in residues]
-    
+    labels = []
     vis_labels = []
-    for res in residues:
-        rname = res.get_resname().strip().upper()
-        rcode = aa_1_letter.get(rname, "X")
-        vis_labels.append(f"{rcode}-{res.get_id()[1]}")
+    coords = []
     
-    metrics = compute_enhanced_metrics(adjacency, dist_matrix)
+    if progress:
+        progress.progress(60)
+        progress_label.text("Extracting standard amino acid nodes...")
 
-    if progress is not None:
-        progress.progress(100)
-        if progress_label is not None:
-            progress_label.text("100% complete — done computing PCN")
+    for res in chain:
+        # 1. Clean the residue name
+        res_name = res.get_resname().strip().upper()
+        
+        # 2. STRICT CHECKS:
+        # - Must be a standard ATOM record (res.id[0] == ' '), excludes HETATM (Ligands/Water)
+        if res.id[0] == ' ' and res_name in standard_aa:
+            if 'CA' in res:  # Must have Alpha Carbon
+                residues.append(res)
+                labels.append(f"{res_name}-{res.id[1]}")
+                vis_labels.append(f"{res_name}\n{res.id[1]}")
+                coords.append(res['CA'].get_coord())
 
-    return (
-        pd.DataFrame(adjacency, index=labels, columns=labels),
-        pd.DataFrame(dist_matrix, index=labels, columns=labels),
-        labels,
-        vis_labels, 
-        coords,
-        residues,
-        metrics
-    )
+    if not residues:
+        return None, None, None, None, None, None, None
+
+    N = len(residues)
+    coords = np.array(coords)
+    
+    if progress:
+        progress.progress(70)
+        progress_label.text(f"Computing distances for {N} residues...")
+
+    # --- Distance Matrix ---
+    dist_matrix = cdist(coords, coords, metric='euclidean')
+    dist_df = pd.DataFrame(dist_matrix, index=labels, columns=labels)
+    
+    # --- Adjacency Matrix ---
+    adj_matrix = np.where((dist_matrix < threshold) & (dist_matrix > 0), 1, 0)
+    adj_df = pd.DataFrame(adj_matrix, index=labels, columns=labels)
+
+    if progress:
+        progress.progress(85)
+        progress_label.text("Calculating network metrics...")
+
+    # --- Compute Metrics (Degree, Betweenness, etc.) ---
+    metrics = compute_enhanced_metrics(adj_matrix, dist_matrix)
+    
+    return adj_df, dist_df, labels, vis_labels, coords, residues, metrics
 
 
 def render_distance_heatmap(dist_df):
@@ -279,8 +273,6 @@ def render_distance_heatmap(dist_df):
         axis_labels = [int(label.split('-')[-1]) for label in dist_df.index]
     except:
         axis_labels = dist_df.index
-
-    # 5-Step Fluorescent Scale to ensure vibrant colors throughout
     custom_colorscale = [
         [0.00, 'rgb(255, 0, 0)'],    # Red (Close)
         [0.25, 'rgb(255, 255, 0)'],  # Yellow (Bright)
@@ -319,7 +311,6 @@ def render_distance_heatmap(dist_df):
         width=700,
         height=700,
         autosize=False,
-        # Force strict square aspect ratio
         xaxis=dict(
             scaleanchor='y',
             scaleratio=1,
@@ -358,8 +349,8 @@ def render_adjacency_heatmap(adj_df):
         x=axis_labels,
         y=axis_labels,
         colorscale=[[0, 'white'], [1, 'black']],
-        showscale=False, # No colorbar needed for binary
-        xgap=0.5, # Small gaps to visualize grid
+        showscale=False, 
+        xgap=0.5,
         ygap=0.5,
         customdata=hover_text,
         hovertemplate=(
@@ -382,7 +373,6 @@ def render_adjacency_heatmap(adj_df):
         width=700,
         height=700,
         autosize=False,
-        # Force strict square aspect ratio
         xaxis=dict(
             scaleanchor='y',
             scaleratio=1,
@@ -403,7 +393,9 @@ def render_adjacency_heatmap(adj_df):
 
 
 def build_3d_figure_enhanced(labels, vis_labels, coords, adj_np, dist_matrix, node_colors, node_sizes, 
-                            residues, hub_indices_global, metrics, highlight_communities=False, view_mode="Show All"):
+                            residues, hub_indices_global, metrics, highlight_communities=False, 
+                            view_mode="Show All", path_indices=None, show_legend=True, 
+                            focused_hub_coords=None): # Added focused_hub_coords arg
     N = len(labels)
     x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
 
@@ -412,140 +404,135 @@ def build_3d_figure_enhanced(labels, vis_labels, coords, adj_np, dist_matrix, no
         res = residues[i]
         name = res.get_resname().strip().upper()
         if name not in res_type_map: name = "UNK"
+        bc_val = metrics['betweenness'][i] if 'betweenness' in metrics else 0.0
+        
         hover_text = (
             f"<b>{labels[i]}</b><br>" 
             f"Type: {res_type_map[name].capitalize()}<br>"
             f"Degree: {int(metrics['degree'][i])}<br>"
             f"Clustering: {metrics['clustering'][i]:.3f}<br>"
-            f"Closeness: {metrics['closeness'][i]:.3f}"
+            f"Closeness: {metrics['closeness'][i]:.3f}<br>"
+            f"Betweenness: {bc_val:.4f}"
         )
         hover_texts.append(hover_text)
 
+    # --- Edge Generation ---
     traces = []
-    norm_edge_x, norm_edge_y, norm_edge_z = [], [], []
-    hub_edge_x, hub_edge_y, hub_edge_z = [], [], []
+    path_edge_x, path_edge_y, path_edge_z = [], [], []
+    matched_edge_x, matched_edge_y, matched_edge_z = [], [], []
+    ghost_edge_x, ghost_edge_y, ghost_edge_z = [], [], []
     
+    path_set = set(path_indices) if path_indices else set()
+
     for i in range(N):
         for j in range(i + 1, N):
             if adj_np[i, j] == 1:
-                # Visibility check
-                if node_sizes[i] == 0 or node_sizes[j] == 0:
-                    norm_edge_x.extend([coords[i][0], coords[j][0], None])
-                    norm_edge_y.extend([coords[i][1], coords[j][1], None])
-                    norm_edge_z.extend([coords[i][2], coords[j][2], None])
+                # 1. Check for Path Edge
+                is_path_edge = False
+                if view_mode == "Shortest Path (Betweenness)" and path_indices:
+                    if i in path_set and j in path_set:
+                        try:
+                            idx_i = path_indices.index(i)
+                            idx_j = path_indices.index(j)
+                            if abs(idx_i - idx_j) == 1:
+                                is_path_edge = True
+                        except ValueError:
+                            pass
+                
+                # 2. Check for "Matched" (Visible) Edge
+                is_matched_pair = (node_sizes[i] > 5 and node_sizes[j] > 5)
+
+                if is_path_edge:
+                    path_edge_x.extend([coords[i][0], coords[j][0], None])
+                    path_edge_y.extend([coords[i][1], coords[j][1], None])
+                    path_edge_z.extend([coords[i][2], coords[j][2], None])
+                elif is_matched_pair:
+                    matched_edge_x.extend([coords[i][0], coords[j][0], None])
+                    matched_edge_y.extend([coords[i][1], coords[j][1], None])
+                    matched_edge_z.extend([coords[i][2], coords[j][2], None])
                 else:
-                    is_hub_edge = highlight_communities and (i in hub_indices_global or j in hub_indices_global)
-                    if is_hub_edge:
-                        hub_edge_x.extend([coords[i][0], coords[j][0], None])
-                        hub_edge_y.extend([coords[i][1], coords[j][1], None])
-                        hub_edge_z.extend([coords[i][2], coords[j][2], None])
-                    else:
-                        norm_edge_x.extend([coords[i][0], coords[j][0], None])
-                        norm_edge_y.extend([coords[i][1], coords[j][1], None])
-                        norm_edge_z.extend([coords[i][2], coords[j][2], None])
+                    ghost_edge_x.extend([coords[i][0], coords[j][0], None])
+                    ghost_edge_y.extend([coords[i][1], coords[j][1], None])
+                    ghost_edge_z.extend([coords[i][2], coords[j][2], None])
 
-    traces.append(go.Scatter3d(
-        x=norm_edge_x if norm_edge_x else [], y=norm_edge_y if norm_edge_y else [], z=norm_edge_z if norm_edge_z else [],
-        mode="lines",
-        line=dict(color='rgba(0,0,0,0.2)', width=2),
-        hoverinfo="none",
-        showlegend=False
-    ))
+    # Trace A: Ghost Edges
+    if ghost_edge_x:
+        traces.append(go.Scatter3d(
+            x=ghost_edge_x, y=ghost_edge_y, z=ghost_edge_z,
+            mode="lines", line=dict(color='rgba(80, 80, 80, 0.4)', width=1), 
+            hoverinfo="none", showlegend=False
+        ))
 
-    traces.append(go.Scatter3d(
-        x=hub_edge_x if hub_edge_x else [], y=hub_edge_y if hub_edge_y else [], z=hub_edge_z if hub_edge_z else [],
-        mode="lines",
-        line=dict(color='rgba(220, 50, 50, 0.6)', width=5),
-        hoverinfo="none",
-        showlegend=False
-    ))
+    # Trace B: Matched Edges
+    if matched_edge_x:
+        col = 'black'
+        wid = 2
+        if view_mode == "Show Hubs Only" and highlight_communities:
+             col = 'rgba(200, 50, 50, 0.6)'
+             wid = 4
+        traces.append(go.Scatter3d(
+            x=matched_edge_x, y=matched_edge_y, z=matched_edge_z,
+            mode="lines", line=dict(color=col, width=wid),
+            hoverinfo="none", showlegend=False
+        ))
 
-    node_trace_idx = 2
+    # Trace C: Path Edges (Req 2: Orange and thinner)
+    if path_edge_x:
+        traces.append(go.Scatter3d(
+            x=path_edge_x, y=path_edge_y, z=path_edge_z,
+            mode="lines",
+            # Changed color to orange, reduced width to 4
+            line=dict(color='orange', width=4),
+            hoverinfo="none", showlegend=False
+        ))
+
+    # Trace D: Nodes
     traces.append(
         go.Scatter3d(
             x=x, y=y, z=z,
             mode="markers+text", 
             marker=dict(symbol='circle', size=node_sizes, color=node_colors, line=dict(width=1.5, color="white")),
-            text=vis_labels, 
-            textposition="middle center",
+            text=vis_labels, textposition="middle center",
             textfont=dict(family="Arial", size=10, color="black", weight="bold"), 
-            hovertext=hover_texts, 
-            hoverinfo="text",
-            showlegend=False,
+            hovertext=hover_texts, hoverinfo="text", showlegend=False,
         )
     )
 
-    dummy_traces = []
-    legend_items = [("Hydrophobic", "#D94E1E"), ("Polar", "#003B6F"), ("Positive", "#007A55"), ("Negative", "#B32630")]
-    for name, color in legend_items:
-        dummy_traces.append(go.Scatter3d(x=[None], y=[None], z=[None], mode='markers', marker=dict(size=15, color=color), name=name, showlegend=True))
-    
-    fig = go.Figure(data=traces + dummy_traces)
-
-    updatemenus = []
-    if view_mode == "Show Hubs Only" and len(hub_indices_global) > 0:
-        buttons = [dict(
-            label="Hub View",
-            method="update", 
-            args=[
-                {"marker.color": [node_colors], "marker.size": [node_sizes]}, 
-                {"scene.camera": None, "scene.annotations": []},
-                [node_trace_idx] 
-            ]
-        )]
-        
-        sorted_hubs = sorted(hub_indices_global, key=lambda idx: metrics['degree'][idx], reverse=True)
-        for idx in sorted_hubs:
-            label = labels[idx] 
-            degree = int(metrics['degree'][idx])
-            cx, cy, cz = coords[idx][0], coords[idx][1], coords[idx][2]
-            
-            new_colors = list(node_colors)
-            new_colors[idx] = "#FFFF00"
-            new_sizes = list(node_sizes)
-            if new_sizes[idx] > 0:
-                new_sizes[idx] = new_sizes[idx] + 5 
-            
-            buttons.append(dict(
-                label=f"Target: {label}",
-                method="update",
-                args=[
-                    {"marker.color": [new_colors], "marker.size": [new_sizes]},
-                    {
-                        "scene.camera.center": {"x": 0, "y": 0, "z": 0}, 
-                        "scene.camera.eye": {"x": cx/40 + 0.5, "y": cy/40 + 0.5, "z": cz/40 + 0.5},
-                        "scene.annotations": [] 
-                    },
-                    [node_trace_idx]
-                ]
+    # Legend Traces
+    if show_legend:
+        legend_items = [("Hydrophobic", "#D94E1E"), ("Polar", "#003B6F"), ("Positive", "#007A55"), ("Negative", "#B32630")]
+        for name, color in legend_items:
+            traces.append(go.Scatter3d(
+                x=[None], y=[None], z=[None], 
+                mode='markers', marker=dict(size=15, color=color), 
+                name=name, showlegend=True
             ))
-            
-        updatemenus = [dict(
-            buttons=buttons,
-            direction="down",
-            showactive=True,
-            x=0.0, xanchor="left",
-            y=1.0, yanchor="top",
-            bgcolor="white", bordercolor="#2a5298", borderwidth=2,
-            pad={"r": 10, "t": 10},
-            font=dict(size=12, color="black", family="Arial")
-        )]
+    
+    fig = go.Figure(data=traces)
 
-    fig.update_layout(
+    layout_dict = dict(
         paper_bgcolor="#f8f9fa",
         plot_bgcolor="#f8f9fa",
-        updatemenus=updatemenus,
-        showlegend=True,
+        showlegend=show_legend,
         legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99, bgcolor="rgba(255, 255, 255, 0.8)", bordercolor="#e0e0e0", borderwidth=1),
         scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False), aspectmode="data", bgcolor="#f8f9fa", dragmode="orbit"),
         margin=dict(l=0, r=0, t=40, b=0),
         height=900 
     )
+
+    if focused_hub_coords is not None:
+        cx, cy, cz = focused_hub_coords
+        layout_dict['scene']['camera'] = {
+            "center": {"x": 0, "y": 0, "z": 0},
+            # Divisor controls zoom level, +0.5 offsets viewing angle slightly
+            "eye": {"x": cx/40 + 0.5, "y": cy/40 + 0.5, "z": cz/40 + 0.5}
+        }
+
+    fig.update_layout(layout_dict)
     return fig
 
 
 def render_hub_analysis_panel(labels, residues, metrics, hub_indices, communities, adj_np):
-    # --- Custom Hub SVG Icon ---
     hub_icon_svg = """<svg width="80" height="80" viewBox="-20 -20 140 140" xmlns="http://www.w3.org/2000/svg" style="display: block;">
     <g stroke="#1e3c72" stroke-width="8" stroke-linecap="round">
         <line x1="50" y1="50" x2="50" y2="10" />
@@ -568,7 +555,6 @@ def render_hub_analysis_panel(labels, residues, metrics, hub_indices, communitie
     <circle cx="22" cy="78" r="8" fill="#1e3c72" />
 </svg>"""
 
-    # --- Header Box ---
     header_html = f"""<div style="background: white; padding: 20px; border-radius: 12px; margin: 30px 0 20px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-left: 6px solid #1e3c72; display: flex; align-items: center; gap: 25px;">
     <div style="flex-shrink: 0;">{hub_icon_svg}</div>
     <div><h3 style="margin: 0; color: #1e3c72; font-size: 38px !important; font-weight: 800 !important; line-height: 1.2;">Hub Analysis</h3></div>
@@ -598,9 +584,16 @@ def render_hub_analysis_panel(labels, residues, metrics, hub_indices, communitie
             label = labels[idx]
             res_name = residues[idx].get_resname().strip()
             res_type = res_type_map.get(res_name, "polar")
+            bc_val = metrics['betweenness'][idx] if 'betweenness' in metrics else 0.0
+            
             csv_data.append({
-                "Residue Label": label, "Residue Name": res_name, "Residue Type": res_type,
-                "Degree": int(metrics['degree'][idx]), "Clustering Coeff": f"{metrics['clustering'][idx]:.4f}", "Closeness Centrality": f"{metrics['closeness'][idx]:.4f}"
+                "Residue Label": label, 
+                "Residue Name": res_name, 
+                "Residue Type": res_type,
+                "Degree": int(metrics['degree'][idx]), 
+                "Clustering Coeff": f"{metrics['clustering'][idx]:.4f}", 
+                "Closeness Centrality": f"{metrics['closeness'][idx]:.4f}",
+                "Betweenness Centrality": f"{bc_val:.4f}"
             })
         
         df_hubs = pd.DataFrame(csv_data)
@@ -613,7 +606,6 @@ def render_hub_analysis_panel(labels, residues, metrics, hub_indices, communitie
     
     st.markdown("---")
     
-    # --- DYNAMIC HEADER LOGIC ---
     if len(sorted_hubs) <= top_n:
         st.markdown("#### 🔍 Hub Details")
     else:
@@ -628,6 +620,8 @@ def render_hub_analysis_panel(labels, residues, metrics, hub_indices, communitie
         degree = int(metrics['degree'][idx])
         clustering = metrics['clustering'][idx]
         closeness = metrics['closeness'][idx]
+        bc_val = metrics['betweenness'][idx] if 'betweenness' in metrics else 0.0
+        
         community = communities.get(idx, {})
         community_size = community.get('size', 0)
         composition = community.get('composition', {})
@@ -640,7 +634,11 @@ def render_hub_analysis_panel(labels, residues, metrics, hub_indices, communitie
                 <div style="background: {color}; color: white; padding: 5px 12px; border-radius: 20px; font-weight: 600;">Deg: {degree}</div>
             </div>
             <div style="margin-top: 10px; font-size: 13px; color: #555;">
-                <div style="display: flex; gap: 20px;"><div>• Clustering: <b>{clustering:.3f}</b></div><div>• Closeness: <b>{closeness:.3f}</b></div></div>
+                <div style="display: flex; gap: 20px;">
+                    <div>• Clustering: <b>{clustering:.3f}</b></div>
+                    <div>• Closeness: <b>{closeness:.3f}</b></div>
+                </div>
+                <div style="margin-top:2px;">• Betweenness: <b>{bc_val:.4f}</b></div>
                 <div style="margin-top:5px;"><b>Community:</b> {community_size} neighbors</div>
                 <div style="font-size: 11px; color: #777;">{comp_str}</div>
             </div>
@@ -659,43 +657,90 @@ def draw_pcn_plot_enhanced(labels, vis_labels, coords, adjacency, dist_matrix, r
     deg_min = degrees.min() if len(degrees) else 0
     deg_ptp = np.ptp(degrees) if np.ptp(degrees) > 0 else 1
     
-    # --- Visualization Header (Emoji Removed) ---
     st.markdown("""<div style="background: white; padding: 15px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.08);"><h3 style="color: #1e3c72; margin-bottom: 10px;">Interactive Network Explorer</h3></div>""", unsafe_allow_html=True)
 
     filter_col1, filter_col2 = st.columns([1, 1])
     with filter_col1:
-        # Renamed "Centrality" -> "Closeness Centrality"
-        # Added "Clustering Coefficient"
         view_mode = st.radio(
             "View Filter:", 
-            ["Show All", "Show Hubs Only", "Hydrophobic Core", "Closeness Centrality", "Clustering Coefficient", "Custom Degree Filter"]
+            [
+                "Show All", 
+                "Show Hubs Only", 
+                "Hydrophobic Core", 
+                "Closeness Centrality", 
+                "Shortest Path (Betweenness)", 
+                "Degree Viewer"
+            ]
         )
-        # Set value=True by default
-        strict_filter = st.checkbox("Hide Unmatched Nodes", value=True, help="If checked, unmatched nodes appear as faint 'ghosts' with no labels.")
-    
+        
+        col_opt1, col_opt2 = st.columns(2)
+        with col_opt1:
+            strict_filter = st.checkbox("Hide Unmatched Nodes", value=True, help="If checked, unmatched nodes appear as faint 'ghosts'.")
+        with col_opt2:
+            show_legend = st.checkbox("Show Legend Colors", value=True)
+
+    # --- Variables ---
     hub_percentile = 10
     custom_min_degree = 0
     highlight_communities = False
-    centrality_threshold = 0.1
-    clustering_threshold = 0.0
+    centrality_threshold = 0.0 # Default 0
     exact_degree_match = False
-    max_closeness = np.max(metrics['closeness']) if len(metrics['closeness']) > 0 else 1.0
+    path_indices = []
+    
+    # New variables for Hub Focus feature
+    focused_hub_idx = None
+    focused_hub_coords = None
 
-    # --- Filter Inputs ---
+    # --- Filter Logic & Input ---
     with filter_col2:
-        if view_mode == "Custom Degree Filter":
+        if view_mode == "Degree Viewer":
             max_deg = int(degrees.max()) if N > 0 else 0
             custom_min_degree = st.slider("Degree Value", 0, max_deg, 0)
             exact_degree_match = st.checkbox("Match Exact Degree Only", value=False)
+            
         elif view_mode == "Show Hubs Only":
             hub_percentile = st.number_input("Top % (Percentile):", min_value=1, max_value=50, value=10, step=1)
             highlight_communities = st.checkbox("Highlight Communities", value=True)
+            
         elif view_mode == "Closeness Centrality":
-            centrality_threshold = st.slider("Relative Centrality (Normalized)", 0.0, 1.0, 0.1, 0.001)
-        elif view_mode == "Clustering Coefficient":
-            clustering_threshold = st.slider("Min Clustering Coefficient", 0.0, 1.0, 0.5, 0.01)
-    
-    # --- Hub Logic ---
+            # UPDATED: Calculate and display the Max Closeness for context
+            max_val = np.max(metrics['closeness']) if len(metrics['closeness']) > 0 else 0.0
+            st.info(f"Max Closeness in this network: **{max_val:.4f}**")
+            
+            # Number input for typing precision
+            centrality_threshold = st.number_input(
+                "Minimum Closeness Centrality", 
+                min_value=0.000, 
+                max_value=1.000, 
+                value=0.000, 
+                step=0.001,
+                format="%.3f"
+            )
+
+        elif view_mode == "Shortest Path (Betweenness)":
+            st.markdown("Select residues to visualize path.")
+            path_col1, path_col2 = st.columns(2)
+            with path_col1:
+                start_res = st.selectbox("Start", labels, key="path_start")
+            with path_col2:
+                end_res = st.selectbox("End", labels, index=len(labels)-1, key="path_end")
+            
+            if start_res and end_res:
+                try:
+                    G = nx.from_numpy_array(adj_np)
+                    start_idx = labels.index(start_res)
+                    end_idx = labels.index(end_res)
+                    
+                    if nx.has_path(G, start_idx, end_idx):
+                        path_indices = nx.shortest_path(G, source=start_idx, target=end_idx)
+                        path_str = " ➔ ".join([labels[i] for i in path_indices])
+                        st.success(f"**Path ({len(path_indices)} steps):** {path_str}")
+                    else:
+                        st.error("No path exists between these residues.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    # --- Hub Calculation & Focus Dropdown ---
     raw_threshold = np.percentile(degrees, 100 - hub_percentile)
     degree_threshold_hub = int(raw_threshold) 
     hub_indices_global = np.where(degrees >= degree_threshold_hub)[0]
@@ -703,42 +748,84 @@ def draw_pcn_plot_enhanced(labels, vis_labels, coords, adjacency, dist_matrix, r
     with filter_col2:
         if view_mode == "Show Hubs Only":
             st.info(f"Showing top {hub_percentile}% (Degree ≥ {degree_threshold_hub})")
+            
+            # --- Streamlit-based Hub Focus Dropdown ---
+            if len(hub_indices_global) > 0:
+                st.markdown("---")
+                hub_options = ["None (Overview)"] + [f"{labels[idx]} (Deg: {int(degrees[idx])})" for idx in hub_indices_global]
+                selected_hub_option = st.selectbox("🎯 Focus on specific Hub:", hub_options)
+                
+                if selected_hub_option != "None (Overview)":
+                    selected_label = selected_hub_option.split(" (Deg:")[0]
+                    focused_hub_idx = labels.index(selected_label)
+                    focused_hub_coords = coords[focused_hub_idx]
 
+    # --- Coloring & Sizing ---
     final_colors, final_sizes, final_text_labels = [], [], []
 
     for i in range(N):
-        deg = degrees[i]
-        norm_deg = (deg - deg_min) / deg_ptp
         is_selected = False
         
-        # --- Selection Logic ---
-        if view_mode == "Show All": 
-            is_selected = True
-        elif view_mode == "Show Hubs Only" and i in hub_indices_global: 
-            is_selected = True
-        elif view_mode == "Custom Degree Filter":
-            if exact_degree_match and deg == custom_min_degree: is_selected = True
-            elif not exact_degree_match and deg >= custom_min_degree: is_selected = True
-        elif view_mode == "Closeness Centrality" and metrics['closeness'][i] >= centrality_threshold * max_closeness: 
-            is_selected = True
-        elif view_mode == "Clustering Coefficient" and metrics['clustering'][i] >= clustering_threshold:
-            is_selected = True
-        elif view_mode == "Hydrophobic Core":
-            name = residues[i].get_resname().strip().upper()
-            if res_type_map.get(name, "UNK") == "hydrophobic": is_selected = True
-        
-        # --- Styling ---
+        # 1. Path Mode Logic
+        if view_mode == "Shortest Path (Betweenness)":
+            if i in path_indices:
+                is_selected = True
+                if i == path_indices[0] or i == path_indices[-1]:
+                    final_colors.append("red")
+                    final_sizes.append(25)
+                else:
+                    final_colors.append("orange") 
+                    final_sizes.append(15)
+                final_text_labels.append(vis_labels[i])
+                continue 
+            else:
+                is_selected = False
+
+        # 2. Standard Modes Logic
+        else:
+            if view_mode == "Show All": 
+                is_selected = True
+            elif view_mode == "Show Hubs Only" and i in hub_indices_global:
+                if i == focused_hub_idx:
+                    final_colors.append("yellow") 
+                    final_sizes.append(35)        
+                    final_text_labels.append(vis_labels[i])
+                    continue 
+                is_selected = True
+            elif view_mode == "Degree Viewer":
+                if exact_degree_match and degrees[i] == custom_min_degree: is_selected = True
+                elif not exact_degree_match and degrees[i] >= custom_min_degree: is_selected = True
+            
+            # UPDATED: Absolute comparison for Closeness Centrality
+            elif view_mode == "Closeness Centrality":
+                 if metrics['closeness'][i] >= centrality_threshold:
+                    is_selected = True
+            
+            elif view_mode == "Hydrophobic Core":
+                name = residues[i].get_resname().strip().upper()
+                if res_type_map.get(name, "UNK") == "hydrophobic": is_selected = True
+
+        # Apply Standard Coloring
         if is_selected:
-            name = residues[i].get_resname().strip().upper()
-            if name not in res_type_map: name = "UNK"
-            base_hex = residue_type_colors.get(res_type_map[name], default_color)
-            opacity_val = 0.8 + (norm_deg * 0.2)
-            h = base_hex.lstrip('#')
-            rgb = tuple(int(h[x:x+2], 16) for x in (0, 2, 4))
-            final_colors.append(f"rgba({rgb[0]},{rgb[1]},{rgb[2]},{float(opacity_val):.2f})")
+            if not show_legend:
+                final_colors.append("#2196F3") 
+            else:
+                name = residues[i].get_resname().strip().upper()
+                if name not in res_type_map: name = "UNK"
+                base_hex = residue_type_colors.get(res_type_map[name], default_color)
+                deg = degrees[i]
+                norm_deg = (deg - deg_min) / deg_ptp
+                opacity_val = 0.8 + (norm_deg * 0.2)
+                h = base_hex.lstrip('#')
+                rgb = tuple(int(h[x:x+2], 16) for x in (0, 2, 4))
+                final_colors.append(f"rgba({rgb[0]},{rgb[1]},{rgb[2]},{float(opacity_val):.2f})")
+            
+            deg = degrees[i]
+            norm_deg = (deg - deg_min) / deg_ptp
             final_sizes.append(15 + (norm_deg * 25))
             final_text_labels.append(vis_labels[i]) 
         else:
+            # Ghost Nodes
             if strict_filter:
                 final_colors.append("rgba(200, 200, 200, 0.05)")
                 final_sizes.append(5)
@@ -755,7 +842,10 @@ def draw_pcn_plot_enhanced(labels, vis_labels, coords, adjacency, dist_matrix, r
         final_colors, final_sizes, residues,
         hub_indices_global, metrics,
         highlight_communities=(view_mode == "Show Hubs Only" and highlight_communities),
-        view_mode=view_mode
+        view_mode=view_mode,
+        path_indices=path_indices,
+        show_legend=show_legend,
+        focused_hub_coords=focused_hub_coords 
     )
     
     st.plotly_chart(fig, use_container_width=True, config={
@@ -768,6 +858,222 @@ def draw_pcn_plot_enhanced(labels, vis_labels, coords, adjacency, dist_matrix, r
     })
     
     render_hub_analysis_panel(labels, residues, metrics, hub_indices_global, communities, adj_np)
+
+def render_degree_betweenness_scatter(labels, metrics, residues):
+    """
+    Constructs a Degree vs. Betweenness Centrality scatter plot with 
+    interactive thresholds, region counting, and a downloadable report.
+    """
+    st.markdown("---")
+    st.markdown("### Degree–Betweenness Analysis")
+    
+    col_input1, col_input2 = st.columns(2)
+    with col_input1:
+        deg_percentile = st.number_input("Top % for High Degree (Structural Hubs)", 
+                                         min_value=1, max_value=50, value=10, step=1)
+    with col_input2:
+        bet_percentile = st.number_input("Top % for High Betweenness (Bottlenecks)", 
+                                         min_value=1, max_value=50, value=5, step=1)
+
+    degrees = metrics['degree']
+    betweenness = metrics['betweenness']
+    clustering = metrics['clustering']
+    
+    # --- 2. Calculate Thresholds ---
+    raw_deg_cutoff = np.percentile(degrees, 100 - deg_percentile)
+    deg_cutoff = int(raw_deg_cutoff) 
+    
+    # Calculate Raw Betweenness
+    N_nodes = len(labels)
+    normalization_factor = (N_nodes - 1) * (N_nodes - 2) if N_nodes > 2 else 1
+    raw_betweenness = betweenness * normalization_factor
+    
+    # Calculate Raw Cutoff for Betweenness
+    raw_bet_cutoff = np.percentile(raw_betweenness, 100 - bet_percentile)
+    
+    # Transform Y values (Log scale)
+    y_values_log = np.log10(raw_betweenness + 1)
+    log_bet_cutoff = np.log10(raw_bet_cutoff + 1)
+    
+    # --- 3. Classify and Count Regions ---
+    hover_texts = []
+    
+    count_global = 0
+    count_hub = 0
+    count_bottleneck = 0
+    count_peripheral = 0
+    
+    classification_data = []
+    
+    for i, label in enumerate(labels):
+        res_name = residues[i].get_resname().strip()
+        deg = degrees[i]
+        bet = raw_betweenness[i]
+        
+        region = ""
+        is_high_deg = deg >= deg_cutoff
+        is_high_bet = bet >= raw_bet_cutoff
+        
+        if is_high_deg and is_high_bet:
+            region = "Global Critical"
+            count_global += 1
+        elif is_high_deg and not is_high_bet:
+            region = "Structural Hub"
+            count_hub += 1
+        elif not is_high_deg and is_high_bet:
+            region = "Bottleneck"
+            count_bottleneck += 1
+        else:
+            region = "Peripheral"
+            count_peripheral += 1
+            
+        hover_texts.append(
+            f"<b>{label} ({res_name})</b><br>" +
+            f"Region: {region}<br>" +
+            f"Degree: {int(deg)}<br>" +
+            f"Raw Betweenness: {bet:.4f}<br>" +
+            f"Clustering: {clustering[i]:.3f}"
+        )
+        
+        classification_data.append({
+            "Residue Label": label,
+            "Residue Name": res_name,
+            "Region": region,
+            "Degree": int(deg),
+            "Raw Betweenness": round(bet, 4),
+            "Clustering Coeff": round(clustering[i], 4)
+        })
+
+    # --- 4. Build Plot ---
+    fig = go.Figure()
+
+    # Scatter Trace
+    fig.add_trace(go.Scatter(
+        x=degrees,
+        y=y_values_log,
+        mode='markers',
+        marker=dict(
+            size=12,              
+            color=clustering,
+            colorscale='Viridis',
+            showscale=True,
+            colorbar=dict(title="Clustering Coeff"),
+            line=dict(width=1, color='black'), 
+            opacity=0.9           
+        ),
+        text=hover_texts,
+        hoverinfo='text',
+        name='Residues'
+    ))
+
+    # Threshold Lines (Background)
+    fig.add_vline(
+        x=deg_cutoff, 
+        line_width=2, 
+        line_dash="dash", 
+        line_color="rgba(255, 0, 0, 0.6)",
+        annotation_text=f"Deg={deg_cutoff}", 
+        annotation_position="top left",
+        layer="below"
+    )
+    
+    fig.add_hline(
+        y=log_bet_cutoff, 
+        line_width=2, 
+        line_dash="dash", 
+        line_color="rgba(255, 0, 0, 0.6)",
+        annotation_text=f"Betw={raw_bet_cutoff:.3f}", 
+        annotation_position="bottom right",
+        layer="below"
+    )
+
+    # --- 5. Annotations with Counts (Pinned to Corners) ---
+    
+    # 1. Global Critical (Top Right)
+    fig.add_annotation(
+        xref="paper", yref="paper", 
+        x=1, y=1,                   
+        text=f"<b>Global Critical</b><br>(N={count_global})", 
+        showarrow=False, 
+        xanchor="right", yanchor="top",
+        font=dict(size=14, color="#d32f2f"),
+        bgcolor="rgba(255, 255, 255, 0.8)",
+        bordercolor="#d32f2f", borderwidth=1
+    )
+    
+    # 2. Bottlenecks (Top Left)
+    fig.add_annotation(
+        xref="paper", yref="paper",
+        x=0, y=1,
+        text=f"<b>Bottlenecks</b><br>(N={count_bottleneck})", 
+        showarrow=False, 
+        xanchor="left", yanchor="top", 
+        font=dict(size=14, color="#f57c00"),
+        bgcolor="rgba(255, 255, 255, 0.8)",
+        bordercolor="#f57c00", borderwidth=1
+    )
+
+    # 3. Structural Hubs (Bottom Right)
+    fig.add_annotation(
+        xref="paper", yref="paper",
+        x=1, y=0,
+        text=f"<b>Structural Hubs</b><br>(N={count_hub})", 
+        showarrow=False, 
+        xanchor="right", yanchor="bottom", 
+        font=dict(size=14, color="#1976d2"),
+        bgcolor="rgba(255, 255, 255, 0.8)",
+        bordercolor="#1976d2", borderwidth=1
+    )
+    
+    # 4. Peripheral (Bottom Left)
+    fig.add_annotation(
+        xref="paper", yref="paper",
+        x=0, y=0,
+        text=f"<b>Peripheral</b><br>(N={count_peripheral})", 
+        showarrow=False, 
+        xanchor="left", yanchor="bottom", 
+        font=dict(size=14, color="#757575"),
+        bgcolor="rgba(255, 255, 255, 0.8)",
+        bordercolor="#757575", borderwidth=1
+    )
+    
+    # --- 6. Layout Updates ---
+    fig.update_layout(
+        title={
+            'text': "<b>Degree vs Betweenness Centrality</b>",
+            'y': 0.95,
+            'x': 0.5,
+            'xanchor': 'center',
+            'yanchor': 'top'
+        },
+        xaxis_title="Node Degree (Linear)",
+        yaxis_title="Log10 (Raw Betweenness + 1)",
+        height=700, 
+        width=900,
+        template="plotly_white",
+        showlegend=False,
+        margin=dict(t=80, b=50, l=50, r=50) 
+    )
+    
+    st.markdown("""
+    This plot partitions residues based on user-defined percentile thresholds. 
+    * **X-Axis:** Node Degree.
+    * **Y-Axis:** Log-transformed Raw Betweenness Centrality.
+    * **Color:** Clustering Coefficient.
+    """)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- 7. Download Button ---
+    if classification_data:
+        df_classification = pd.DataFrame(classification_data)
+        csv_classification = df_classification.to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📥 Download Regional Classification Report (CSV)",
+            data=csv_classification,
+            file_name="degree_betweenness_classification.csv",
+            mime="text/csv"
+        )
 
 
 def load_structure_from_upload(uploaded_file, progress=None, progress_label=None):
@@ -824,7 +1130,6 @@ def load_demo_structure(pdb_id, progress=None, progress_label=None):
 
 
 def process_and_render_pcn(structure, model_choice=None, chain_choice=None, progress_bar=None, progress_label=None):
-    # Safety check for empty structure
     if not structure:
         st.error("Structure file could not be parsed. Please check if it's a valid PDB.")
         return
@@ -836,8 +1141,8 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
             st.info(f"Multi-model structure detected ({len(model_ids)} models).")
             model_choice = st.selectbox("Select NMR Model", model_ids)
         else:
-           st.info("Single structural model detected (no NMR ensemble). Using Model 1.")
-           model_choice = 1
+            st.info("Single structural model detected (no NMR ensemble). Using Model 1.")
+            model_choice = 1
     
     chains = list(structure[model_choice - 1].get_chains())
     chain_ids = [c.id for c in chains]
@@ -854,8 +1159,8 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
             return
 
     if progress_bar:
-            progress_bar.progress(55)
-            progress_label.text("55% complete — preparing computation")
+        progress_bar.progress(55)
+        progress_label.text("55% complete — preparing computation")
     
     # --- COMPUTATION ---
     adj_df, dist_df, labels, vis_labels, coords, residues, metrics = compute_pcn_df(
@@ -901,7 +1206,7 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
     else:
         pdb_display = meta_pdb_id
 
-    # --- STRUCTURE OVERVIEW (Clean Version - No SVG) ---
+    # --- STRUCTURE OVERVIEW ---
     structure_card_html = f"""
     <div style="background: white; padding: 30px; border-radius: 12px; margin: 30px 0; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-left: 6px solid #2a5298;">
         <h3 style="color: #1e3c72; margin-top: 0; margin-bottom: 25px; font-size: 28px; font-weight: 700; border-bottom: 2px solid #eee; padding-bottom: 15px;">
@@ -922,49 +1227,48 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
         </div>
     </div>
     """
-    
     st.markdown(structure_card_html, unsafe_allow_html=True)
 
-    # --- NETWORK SUMMARY SECTION ---
+    # --- NETWORK SUMMARY ---
     st.markdown(
         f"""
         <div style="background: white; padding: 20px; border-radius: 10px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
             <h3 style="color: #1e3c72; margin-bottom: 15px;">Network Summary</h3>
             <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
                 <div style="text-align: center; padding: 15px; background: #f0f4f8; border-radius: 8px;">
-                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-bottom: 10px;">
-                        <circle cx="24" cy="24" r="8" fill="#2a5298" stroke="#1e3c72" stroke-width="2"/>
-                        <circle cx="24" cy="24" r="3" fill="white"/>
-                    </svg>
+                    <div style="margin-bottom: 10px;">
+                        <svg width="40" height="40" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="12" cy="12" r="10" stroke="#2a5298" stroke-width="2" fill="none"/>
+                            <circle cx="12" cy="12" r="4" fill="#2a5298"/>
+                        </svg>
+                    </div>
                     <div style="font-size: 32px; font-weight: 700; color: #2a5298;">{num_nodes}</div>
-                    <div style="font-size: 14px; color: #666; margin-top: 5px;">Nodes</div>
+                    <div style="font-size: 14px; color: #666;">Nodes</div>
                 </div>
                 <div style="text-align: center; padding: 15px; background: #f0f4f8; border-radius: 8px;">
-                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-bottom: 10px;">
-                        <circle cx="12" cy="24" r="4" fill="#2a5298"/>
-                        <circle cx="36" cy="24" r="4" fill="#2a5298"/>
-                        <line x1="16" y1="24" x2="32" y2="24" stroke="#1e3c72" stroke-width="3" stroke-linecap="round"/>
-                    </svg>
+                     <div style="margin-bottom: 10px;">
+                        <svg width="40" height="40" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <line x1="4" y1="20" x2="20" y2="4" stroke="#2a5298" stroke-width="2"/>
+                            <circle cx="4" cy="20" r="3" fill="#2a5298"/>
+                            <circle cx="20" cy="4" r="3" fill="#2a5298"/>
+                        </svg>
+                    </div>
                     <div style="font-size: 32px; font-weight: 700; color: #2a5298;">{num_edges}</div>
-                    <div style="font-size: 14px; color: #666; margin-top: 5px;">Edges</div>
+                    <div style="font-size: 14px; color: #666;">Edges</div>
                 </div>
                 <div style="text-align: center; padding: 15px; background: #f0f4f8; border-radius: 8px;">
-                    <svg width="48" height="48" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-bottom: 10px;">
-                        <circle cx="64" cy="48" r="16" fill="none" stroke="#1e3c72" stroke-width="8"/>
-                        <circle cx="176" cy="64" r="16" fill="none" stroke="#1e3c72" stroke-width="8"/>
-                        <circle cx="64" cy="160" r="16" fill="none" stroke="#1e3c72" stroke-width="8"/>
-                        <circle cx="128" cy="128" r="16" fill="none" stroke="#1e3c72" stroke-width="8"/>
-                        <circle cx="176" cy="192" r="16" fill="none" stroke="#1e3c72" stroke-width="8"/>
-                        <circle cx="96" cy="208" r="16" fill="none" stroke="#1e3c72" stroke-width="8"/>
-                        <line x1="75" y1="56" x2="118" y2="120" stroke="#2a5298" stroke-width="6"/>
-                        <line x1="165" y1="72" x2="138" y2="120" stroke="#2a5298" stroke-width="6"/>
-                        <line x1="75" y1="152" x2="118" y2="135" stroke="#2a5298" stroke-width="6"/>
-                        <line x1="138" y1="135" x2="167" y2="184" stroke="#2a5298" stroke-width="6"/>
-                        <line x1="105" y1="201" x2="167" y2="199" stroke="#2a5298" stroke-width="6"/>
-                        <line x1="75" y1="168" x2="88" y2="200" stroke="#2a5298" stroke-width="6"/>
-                    </svg>
+                    <div style="margin-bottom: 10px;">
+                        <svg width="40" height="40" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="6" cy="6" r="3" fill="#2a5298" />
+                            <circle cx="18" cy="6" r="3" fill="#2a5298" />
+                            <circle cx="12" cy="12" r="3" fill="#2a5298" />
+                            <circle cx="6" cy="18" r="3" fill="#2a5298" />
+                            <circle cx="18" cy="18" r="3" fill="#2a5298" />
+                            <path d="M6 6 L18 18 M18 6 L6 18 M6 6 L18 6 M6 18 L18 18" stroke="#2a5298" stroke-width="2" />
+                        </svg>
+                    </div>
                     <div style="font-size: 32px; font-weight: 700; color: #2a5298;">{density:.4f}</div>
-                    <div style="font-size: 14px; color: #666; margin-top: 5px;">Graph Density</div>
+                    <div style="font-size: 14px; color: #666;">Graph Density</div>
                 </div>
             </div>
         </div>
@@ -972,7 +1276,7 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
         unsafe_allow_html=True
     )
 
-    # --- DISTANCE MATRIX & HEATMAP ---
+    # --- MATRICES ---
     st.markdown("<h3 style='color: #1e3c72; margin-top: 30px;'>Distance Matrix (Preview)</h3>", unsafe_allow_html=True)
     st.dataframe(dist_df.iloc[:10, :10])
     st.download_button("Download Distance Matrix (CSV)", dist_df.to_csv().encode(), "distance.csv")
@@ -980,7 +1284,6 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
     with st.expander("Values Visualization (Heatmap)", expanded=True):
         render_distance_heatmap(dist_df)
 
-    # --- ADJACENCY MATRIX & BINARY MAP ---
     st.markdown("<h3 style='color: #1e3c72; margin-top: 30px;'>Adjacency Matrix (Preview)</h3>", unsafe_allow_html=True)
     st.dataframe(adj_df.iloc[:10, :10])
     st.download_button("Download Adjacency Matrix (CSV)", adj_df.to_csv().encode(), "adjacency.csv")
@@ -988,7 +1291,7 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
     with st.expander("Binary Visualization (Adjacency Map)", expanded=True):
         render_adjacency_heatmap(adj_df)
     
-    # --- NETWORK FILES ---
+    # --- DOWNLOADS ---
     st.markdown("<h3 style='color: #1e3c72; margin-top: 30px;'>Download Network Files</h3>", unsafe_allow_html=True)
     
     edges_sif = []
@@ -1006,27 +1309,21 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
     txt_text = "\n".join(edges_txt)
 
     col_sif, col_edge = st.columns(2)
-    
     with col_sif:
-            st.markdown("""
-            **SIF (Cytoscape)**
-            A Single Interaction Format (SIF) file containing the list of interactions between each residue in the following format:
-                        
-            *Residue_A pp Residue_B*
-            """)
-            st.download_button("Download SIF (Cytoscape)", sif_text, "network.sif")
-            
+        st.markdown("**SIF (Cytoscape)**\n*Residue_A pp Residue_B*")
+        st.download_button("Download SIF", sif_text, "network.sif")
     with col_edge:
-            st.markdown("""
-            **Edge List (Text)**
-            A simple text file containing the list of edges between each residue in the following format:
-                        
-            *Residue_A Residue_B*
-            """)
-            st.download_button("Download Edge List (.txt)", txt_text, "edges.txt")
+        st.markdown("**Edge List (Text)**\n*Residue_A Residue_B*")
+        st.download_button("Download Edge List", txt_text, "edges.txt")
 
+    # --- MAIN VISUALIZATION ---
+    # Note: this function ALREADY calls 'render_hub_analysis_panel' internally!
     draw_pcn_plot_enhanced(labels, vis_labels, coords, adj_df.values, dist_df.values, residues, threshold, metrics)
     
+    # --- NEW: DEGREE vs BETWEENNESS SCATTER ---
+    render_degree_betweenness_scatter(labels, metrics, residues)
+    
+    # --- DEGREE DISTRIBUTION ---
     st.markdown("<h3 style='color: #1e3c72; margin-top: 30px;'>Residue Degree Distribution</h3>", unsafe_allow_html=True)
     if len(labels) > 0:
         degree_counts = pd.Series(metrics['degree']).value_counts().sort_index()
@@ -1039,11 +1336,49 @@ def process_and_render_pcn(structure, model_choice=None, chain_choice=None, prog
         ))
         fig_hist.update_layout(height=360, margin=dict(l=0, r=0, t=20, b=0))
         st.plotly_chart(fig_hist, use_container_width=True)
+    
+    # FIX: REMOVED THE DUPLICATE CALL TO 'render_hub_analysis_panel' HERE.
+    # It was causing the StreamlitDuplicateElementId error because it was being rendered twice.
+
+    # --- FULL STATISTICAL REPORT ---
+    st.markdown("---")
+    st.markdown("<h3 style='color: #1e3c72; margin-top: 20px;'>Full Statistical Report (Preview)</h3>", unsafe_allow_html=True)
+    
+    full_stats_data = []
+    for i in range(num_nodes):
+        r_name = residues[i].get_resname().strip().upper()
+        r_type = res_type_map.get(r_name, "Unknown")
+        bc_val = metrics['betweenness'][i] if 'betweenness' in metrics else 0.0
+        
+        full_stats_data.append({
+            "Residue_No": labels[i],
+            "Type": r_type,
+            "Degree": int(metrics['degree'][i]),
+            "Closeness Centrality": round(metrics['closeness'][i], 4),
+            "Betweenness": round(bc_val, 4),
+            "Clustering Coefficient": round(metrics['clustering'][i], 4)
+        })
+        
+    full_stats_df = pd.DataFrame(full_stats_data)
+    
+    st.dataframe(
+        full_stats_df.head(50), 
+        use_container_width=True, 
+        height=800
+    )
+    
+    # CSV Download
+    full_csv = full_stats_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Complete Statistics (CSV)",
+        data=full_csv,
+        file_name="full_residue_statistics.csv",
+        mime="text/csv"
+    )
 
     if progress_bar:
         progress_bar.progress(100)
         progress_label.text("Processing complete")
-
 
 # -----------------------------------------------------------------------------
 # MAIN LAYOUT
@@ -1115,7 +1450,7 @@ with tab_analysis:
         </div>
         """, unsafe_allow_html=True)
         st.write("Set the distance threshold (Å).")
-        threshold = st.number_input("Contact threshold (Å)", min_value=1.0, max_value=20.0, value=5.0, step=0.1)
+        threshold = st.number_input("Contact threshold (Å)", min_value=1.0, max_value=20.0, value=7.5, step=0.1)
 
     st.divider()
 
@@ -1175,7 +1510,7 @@ with tab_help:
         st.markdown("""
         #### 3. Contact Threshold
         Defines which residues are interacting.
-        * **Default:** 5.0 Å
+        * **Default:** 7.5 Å
         * **Logic:** Pairs with Cα–Cα distance ≤ threshold = **1**, else **0**.
 
         ---
@@ -1188,17 +1523,37 @@ with tab_help:
     st.markdown("---")
     
     st.markdown("""
-    #### 5. Network Visualization
+    #### 5. Network Visualization & Filters
     The interactive 3D viewer displays residues as nodes and contacts as edges.
     
-    * **Hover:** See residue name, index, and centrality metrics.
-    * **Filters:** Toggle between "Show All", "Hubs Only", or "Hydrophobic Core".
+    * **View Filters:**
+        * **Show All:** Standard view of the entire protein.
+        * **Show Hubs Only:** Highlights top connected nodes. Use the **Focus Dropdown** to zoom into specific hubs.
+        * **Closeness Centrality:** Input a precise **minimum value** to filter nodes. The **Max Closeness** is displayed for reference.
+        * **Hydrophobic Core:** Highlights all the Hydrophobic residues in the network.
+        * **Degree Viewer:** Highlights residues based on degree.
+        * **Betweenness Viewer:** Highlights residues based on betweenness centrality.
     * **Colors:**
         * <span style="color:#D94E1E"><b>● Hydrophobic</b></span>
         * <span style="color:#003B6F"><b>● Polar</b></span>
         * <span style="color:#007A55"><b>● Positive</b></span>
         * <span style="color:#B32630"><b>● Negative</b></span>
     """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("""
+    #### 6. Degree–Betweenness Analysis
+    This  scatter plot partitions residues into four functional roles based on user-defined percentile thresholds.
+    
+    * **Axes:**
+        * **X-Axis (Degree):** Local connectivity (Number of contacts).
+        * **Y-Axis (Betweenness):** Global importance (Log-transformed raw value).
+    * **Regions:**
+        * **Global Critical (Top-Right):** High degree & high betweenness. Key for both stability and communication.
+        * **Structural Hubs (Bottom-Right):** High degree & low betweenness. Dense local clusters responsible for stability.
+        * **Bottlenecks (Top-Left):** Low degree & high betweenness. Critical bridges connecting different modules.
+        * **Peripheral (Bottom-Left):** Low degree & low betweenness. Surface or flexible regions.
+    """)
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("### Troubleshooting & Common Errors")
@@ -1231,7 +1586,7 @@ with tab_help:
         - Selected chain contains missing coordinates.
 
         **Solution:**
-        - Increase the contact threshold (e.g., to 6.0 Å or 7.0 Å).
+        - Increase the contact threshold (e.g., to 8.0 Å).
         - Recheck chain and model selection.
         - Verify PDB file integrity.
         """)
@@ -1265,13 +1620,12 @@ with tab_about:
         st.markdown("""
         ### Key Features
         * **Input Flexibility:** Support for X-ray (.pdb) and multi-model NMR ensembles.
-        * **Matrix Generation:** Automatic computation of Distance and Binary Adjacency matrices.
-        * **Interactive Viz:** 3D Network explorer with zoom, orbit, and hub highlighting.
-        * **Export Data:** Download CSV matrices, SIF files (Cytoscape), and Edge lists.
-        * **Residue Coloring:** Analysis based on Hydrophobic cores.
-        * **Graph Metrics:** Degree distribution, clustering coefficients, and centrality.
-        * **Distance Matrix Visualization:** Heatmaps and clustering analyses.
-        * **Adjacency Matrix Visualization:** Binary contact maps for network insights           
+        * **Hub Focus:** Automatically identify and zoom into highly connected "Hub" residues.
+        * **Degree–Betweenness Scatter:** Identify functional bottlenecks and global hubs with dynamic thresholds.
+        * **Precise Filtering:** Filter networks by absolute Closeness Centrality values.
+        * **Interactive Viz:** 3D Network explorer with zoom, orbit, and community detection.
+        * **Export Data:** Download CSV matrices, regional classification reports, and Cytoscape (SIF) files.
+        * **Graph Metrics:** Degree distribution, clustering coefficients, and centrality.        
         """)
 
     with col_meth:
@@ -1305,10 +1659,12 @@ with tab_about:
     """)
     
     st.markdown("""
-    #### 3. Closeness Centrality
-    Represents how close a residue is to all other residues in the network. It is the reciprocal of the sum of shortest path distances $d(i, j)$ from node $i$ to all other nodes $j$.
+    #### 3. Closeness Centrality (Normalized)
+    Represents how close a residue is to all other residues. It is calculated using the **Wasserman and Faust** formula to strictly normalize values between 0 and 1, even for disconnected graphs.
     
-    $$ C_{close}(i) = \\frac{N - 1}{\\sum_{j \\neq i} d(i, j)} $$
+    $$ C_{close}(i) = \\frac{N - 1}{\\sum_{j \\neq i} d(i, j)} \\cdot \\frac{n - 1}{N - 1} $$
+    
+    Where $d(i, j)$ is the shortest path distance, $n$ is the number of reachable nodes, and $N$ is the total nodes.
     """)
     
     st.markdown("""
