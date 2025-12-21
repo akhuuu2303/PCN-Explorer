@@ -73,8 +73,15 @@ The following dependencies will be installed into your system:
 
 -streamlit
 
+-networkx
+
+-Pillow
+
+-scipy
+
 ## Authors 
-Akhurath Ganapathy (2025) 
+Akhurath Ganapathy (2025)
+Sanjana Vijay Krishnan (2025)
 
 
 
