@@ -1662,7 +1662,7 @@ with tab_about:
     #### 3. Closeness Centrality (Normalized)
     Represents how close a residue is to all other residues. It is calculated using the **Wasserman and Faust** formula to strictly normalize values between 0 and 1, even for disconnected graphs.
     
-    $$ C_{close}(i) = \\frac{N - 1}{\\sum_{j \\neq i} d(i, j)} \\cdot \\frac{n - 1}{N - 1} $$
+    $$ C_{close}(i) = \\frac{n - 1}{\\sum_{j \\neq i} d(i, j)} \\cdot \\frac{n - 1}{N - 1} $$
     
     Where $d(i, j)$ is the shortest path distance, $n$ is the number of reachable nodes, and $N$ is the total nodes.
     """)
