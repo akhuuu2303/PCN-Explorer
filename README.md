@@ -81,7 +81,7 @@ The following dependencies will be installed into your system:
 
 ## Authors 
 Akhurath Ganapathy (2025)
-Sanjana Vijay Krishnan (2025)
+
 
 
 
