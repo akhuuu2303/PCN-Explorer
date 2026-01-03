@@ -61,7 +61,7 @@ st.markdown("""
         padding: 10px 0;
     }
 
-    /* --- GENERAL UI --- */
+    /* ---  UI --- */
     .stButton>button {
         background: linear-gradient(135deg, #2a5298 0%, #1e3c72 100%);
         color: white;
