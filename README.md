@@ -102,3 +102,10 @@ Residues are classified into four functional roles by comparing their metrics ag
 2.  **Structural Hubs:** High Degree, Low Betweenness (Local Stability Centers).
 3.  **Bottlenecks:** Low Degree, High Betweenness (Critical Bridges/Connectors).
 4.  **Peripheral:** Low Degree, Low Betweenness (Surface/Flexible Regions).
+
+## Authors
+
+* **Akhurath Ganapathy**
+* **Sanjana Vijay Krishnan**
+
+*(Developed in 2025)*
