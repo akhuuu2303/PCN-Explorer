@@ -105,7 +105,7 @@ Residues are classified into four functional roles by comparing their metrics ag
 
 ## Authors
 
-* **Akhurath Ganapathy**
-* **Sanjana Vijay Krishnan**
+* **Akhurath Ganapathy** [![GitHub](https://img.shields.io/badge/GitHub-100000?style=flat&logo=github&logoColor=white)](https://github.com/YourUsername)
+* **Sanjana Vijay Krishnan** [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=flat&logo=linkedin&logoColor=white)](https://linkedin.com/in/YourProfile)
 
 *(Developed in 2025)*
