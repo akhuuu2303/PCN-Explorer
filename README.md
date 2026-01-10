@@ -103,9 +103,9 @@ Residues are classified into four functional roles by comparing their metrics ag
 3.  **Bottlenecks:** Low Degree, High Betweenness (Critical Bridges/Connectors).
 4.  **Peripheral:** Low Degree, Low Betweenness (Surface/Flexible Regions).
 
-## Authors
+### Authors
 
-* **Akhurath Ganapathy** [![GitHub](https://img.shields.io/badge/GitHub-100000?style=flat&logo=github&logoColor=white)](https://github.com/YourUsername)
-* **Sanjana Vijay Krishnan** [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=flat&logo=linkedin&logoColor=white)](https://linkedin.com/in/YourProfile)
+* **Akhurath Ganapathy** [![GitHub](https://img.shields.io/badge/GitHub-100000?style=flat&logo=github&logoColor=white)](https://github.com/akhuuu2303) [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/akhurath-ganapathy-73b699346)
+* **Sanjana Vijay Krishnan**
 
 *(Developed in 2025)*
